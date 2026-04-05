@@ -304,6 +304,7 @@ elif page == "🔍 System Status":
     st.title("🔍 System Status")
     st.markdown("---")
 
+    # API health
     data = api_get("/health")
     if data:
         st.success(f"✅ API is healthy — version {data.get('version')}")
@@ -314,19 +315,95 @@ elif page == "🔍 System Status":
         st.error("❌ API is offline. Start it with: `uvicorn api.main:app --reload`")
 
     st.markdown("---")
+
+    # Guidelines RAG status
+    st.markdown("### 📚 Clinical Guidelines Knowledge Base")
+    g_data = api_get("/guidelines-status")
+    if g_data:
+        collection = g_data.get("collection", {})
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Chunks", collection.get("total_chunks", 0))
+        col2.metric("Sources Loaded", collection.get("total_sources", 0))
+        status = g_data.get("status", "unknown")
+        col3.metric("Status", "✅ Ready" if collection.get("total_chunks", 0) > 0 else "⚠️ Empty")
+
+        if collection.get("total_chunks", 0) == 0:
+            st.warning("Guidelines not loaded yet. Run a refresh below.")
+
+        # Sources table
+        sources = collection.get("sources", [])
+        if sources:
+            st.markdown("**Loaded sources:**")
+            for s in sources:
+                last = s.get("last_updated", "")[:10]
+                st.markdown(f"- `{s['source_id']}` — last updated {last}")
+
+        # Recent refreshes
+        recent = g_data.get("recent_refreshes", [])
+        if recent:
+            st.markdown("**Recent refreshes:**")
+            for r in recent[:3]:
+                ts = r.get("timestamp", "")[:16]
+                mode = r.get("mode", "")
+                embedded = r.get("sources_embedded", 0)
+                valid = r.get("validation", "")
+                st.markdown(f"- `{ts}` — {mode} — {embedded} sources embedded — {valid}")
+
+    st.markdown("---")
+
+    # Manual refresh controls
+    st.markdown("### 🔄 Trigger Guidelines Refresh")
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("**Weekly sources only** (USPSTF, CDC)")
+        st.caption("Use for routine weekly updates")
+        if st.button("▶ Run Weekly Refresh", use_container_width=True):
+            from rag.guideline_sources import WEEKLY_SOURCES
+            ids = [s["id"] for s in WEEKLY_SOURCES]
+            result = api_post("/refresh-guidelines", {"source_ids": ids, "force": False, "triggered_by": "dashboard"})
+            if result:
+                st.success(result.get("message", "Refresh started"))
+
+    with col_b:
+        st.markdown("**Full refresh — ALL sources**")
+        st.caption("Use when ADA / ACC guidelines are updated")
+        force = st.checkbox("Force re-embed (ignore change detection)")
+        if st.button("⚡ Run Full Refresh", use_container_width=True):
+            result = api_post("/refresh-guidelines", {"source_ids": None, "force": force, "triggered_by": "dashboard_manual"})
+            if result:
+                st.success(result.get("message", "Full refresh started"))
+
+    st.markdown("---")
+
+    # Test search
+    st.markdown("### 🔍 Test Guideline Search")
+    test_q = st.text_input("Search query", placeholder="mammogram screening 67 year old woman")
+    if test_q:
+        results = api_get(f"/guidelines-search?q={test_q}&n=3")
+        if results and results.get("results"):
+            for r in results["results"]:
+                with st.expander(f"[{r['relevance_score']:.0%}] {r['source_name']}"):
+                    st.markdown(f"**Source:** [{r['source_name']}]({r['url']})")
+                    st.markdown(f"**Retrieved:** {r['scraped_at']}")
+                    st.markdown(f"> {r['text'][:400]}...")
+        else:
+            st.info("No results — guidelines may not be loaded yet.")
+
+    st.markdown("---")
     st.markdown("### Quick start commands")
     st.code("""
-# 1. Start the API
+# 1. Install new RAG dependencies
+pip install chromadb sentence-transformers
+
+# 2. Run initial guidelines refresh (first time)
+python rag/refresh_flow.py
+
+# 3. Start the API
 uvicorn api.main:app --reload --port 8000
 
-# 2. Run the Prefect workflow (processes all patients)
+# 4. Run Prefect weekly scheduler
 python orchestration/prefect_flow.py
-
-# 3. Test the prior auth agent directly
-python agents/prior_auth_agent.py
-
-# 4. View agent traces
-# Open https://smith.langchain.com → your project
     """, language="bash")
 
 # ── Footer ─────────────────────────────────────────────────────────────────────

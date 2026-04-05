@@ -1,0 +1,105 @@
+[
+  {
+    "timestamp": "2026-04-05T19:29:15.434821",
+    "mode": "manual_full",
+    "triggered_by": "cli",
+    "sources_embedded": 9,
+    "sources_unchanged": 0,
+    "sources_skipped": 6,
+    "total_chunks": 176,
+    "total_sources": 9,
+    "validation": "PASS",
+    "embed_details": [
+      {
+        "source_id": "uspstf_breast_cancer",
+        "status": "embedded",
+        "chunks_embedded": 41,
+        "scraped_at": "2026-04-05T19:28:44.461340"
+      },
+      {
+        "source_id": "uspstf_colorectal",
+        "status": "embedded",
+        "chunks_embedded": 35,
+        "scraped_at": "2026-04-05T19:28:46.047030"
+      },
+      {
+        "source_id": "uspstf_hypertension",
+        "status": "embedded",
+        "chunks_embedded": 18,
+        "scraped_at": "2026-04-05T19:28:47.693492"
+      },
+      {
+        "source_id": "uspstf_diabetes",
+        "status": "embedded",
+        "chunks_embedded": 22,
+        "scraped_at": "2026-04-05T19:28:49.272085"
+      },
+      {
+        "source_id": "uspstf_lung_cancer",
+        "status": "embedded",
+        "chunks_embedded": 28,
+        "scraped_at": "2026-04-05T19:28:51.134366"
+      },
+      {
+        "source_id": "uspstf_depression",
+        "status": "embedded",
+        "chunks_embedded": 21,
+        "scraped_at": "2026-04-05T19:28:52.892239"
+      },
+      {
+        "source_id": "ada_standards_2025",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "ada_ckd_diabetes",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "aha_hypertension_2017",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "aha_cholesterol_2018",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "kdigo_ckd_2024",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-05T19:28:57.316023"
+      },
+      {
+        "source_id": "cdc_adult_immunization_2025",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "hedis_diabetes_measures",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-05T19:29:00.192837"
+      },
+      {
+        "source_id": "hedis_colorectal_screening",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-05T19:29:02.308195"
+      },
+      {
+        "source_id": "jnc8_hypertension",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      }
+    ]
+  }
+]

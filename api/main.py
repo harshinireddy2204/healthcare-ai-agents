@@ -12,8 +12,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from openai import RateLimitError
 
 load_dotenv()
 
@@ -108,11 +106,7 @@ def write_audit(patient_id: str, status: str, result: dict):
 
 
 # ── Background task ───────────────────────────────────────────────────────────
-@retry(
-    retry=retry_if_exception_type(RateLimitError),
-    wait=wait_exponential(multiplier=1, min=4, max=60),
-    stop=stop_after_attempt(3)
-)
+
 def run_triage_background(patient_id: str, mode: str):
     """
     Run agent workflow in background. Logs both success and failure
@@ -294,3 +288,102 @@ def get_audit_log(patient_id: Optional[str] = None, limit: int = 50):
             for row in rows
         ]
     }
+
+
+# ── Guidelines RAG endpoints ──────────────────────────────────────────────────
+
+class RefreshGuidelinesRequest(BaseModel):
+    source_ids: Optional[list[str]] = None  # None = refresh ALL sources
+    force: bool = False                      # True = re-embed even unchanged
+    triggered_by: str = "api"
+
+
+@app.post("/refresh-guidelines")
+def refresh_guidelines(
+    request: RefreshGuidelinesRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Manually trigger a guidelines refresh.
+    Use this when a major guideline update is published (e.g. new ADA Standards).
+    source_ids=null refreshes ALL sources.
+    force=true re-embeds everything even if content hasn't changed.
+    """
+    background_tasks.add_task(
+        _run_guidelines_refresh_background,
+        request.source_ids,
+        request.force,
+        request.triggered_by
+    )
+
+    scope = f"{len(request.source_ids)} specific sources" if request.source_ids else "ALL sources"
+    return {
+        "status": "REFRESH_STARTED",
+        "scope": scope,
+        "force": request.force,
+        "message": f"Guidelines refresh triggered for {scope}. Check /guidelines-status for progress.",
+        "triggered_at": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/guidelines-status")
+def get_guidelines_status():
+    """
+    Return current state of the guidelines vector store
+    and the last 5 refresh runs.
+    """
+    try:
+        from rag.embedder import get_collection_stats
+        from rag.refresh_flow import get_refresh_log
+
+        stats = get_collection_stats()
+        log = get_refresh_log()[:5]  # last 5 runs
+
+        return {
+            "collection": stats,
+            "recent_refreshes": log,
+            "status": "healthy" if stats["total_chunks"] > 0 else "empty — run /refresh-guidelines first"
+        }
+    except Exception as e:
+        return {
+            "collection": {"total_chunks": 0, "total_sources": 0},
+            "recent_refreshes": [],
+            "status": f"error: {e}"
+        }
+
+
+@app.get("/guidelines-search")
+def search_guidelines(q: str, category: Optional[str] = None, n: int = 3):
+    """
+    Test the guidelines search directly.
+    Useful for verifying the RAG layer is working before running agents.
+    """
+    try:
+        from rag.retriever import retrieve_guidelines
+        results = retrieve_guidelines(q, category=category, n_results=n)
+        return {
+            "query": q,
+            "category": category,
+            "results": results
+        }
+    except Exception as e:
+        return {"error": str(e), "query": q}
+
+
+def _run_guidelines_refresh_background(
+    source_ids: Optional[list[str]],
+    force: bool,
+    triggered_by: str
+):
+    """Background task that runs the Prefect manual refresh flow."""
+    try:
+        from rag.refresh_flow import manual_refresh_flow
+        manual_refresh_flow(
+            source_ids=source_ids,
+            force=force,
+            triggered_by=triggered_by
+        )
+    except Exception as e:
+        print(f"[Guidelines Refresh] ERROR: {e}")
+        import traceback
+        traceback.print_exc()

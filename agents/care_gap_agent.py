@@ -23,6 +23,7 @@ from langgraph.prebuilt import ToolNode
 
 from tools.ehr_tools import EHR_TOOLS
 from tools.risk_tools import RISK_TOOLS
+from rag.retriever import GUIDELINE_TOOLS
 
 load_dotenv()
 
@@ -40,7 +41,7 @@ class CareGapState(TypedDict):
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
-ALL_TOOLS = EHR_TOOLS + RISK_TOOLS
+ALL_TOOLS = EHR_TOOLS + RISK_TOOLS + GUIDELINE_TOOLS
 
 
 # ── Lazy LLM factory (called inside each node, not at import time) ─────────────
@@ -66,13 +67,18 @@ PLANNER_SYSTEM = """You are a clinical care gap specialist. Your job is to plan
 a systematic review of a patient's preventive care needs.
 
 Given a patient ID, generate a numbered list of specific data checks to perform.
-Each check should be a single concrete action like:
+Each check should be a single concrete action. Always include a step to search
+clinical guidelines to ground your findings in evidence.
+
+Example plan:
   1. Get patient demographics (age, gender, diagnoses)
   2. Check mammogram screening history
   3. Check colonoscopy history
   4. Check flu vaccine history
   5. Check most recent HbA1c (if diabetic)
-  6. Calculate risk score
+  6. Search clinical guidelines for diabetes care gaps
+  7. Search clinical guidelines for preventive screening recommendations
+  8. Calculate risk score
 
 Output ONLY the numbered list, nothing else. Be specific about what to look up.
 """
@@ -83,12 +89,17 @@ After calling tools, summarize what you found in 1-2 sentences.
 """
 
 REPORTER_SYSTEM = """You are a care gap report writer. Given the completed checks,
-write a clear, actionable summary of:
-1. Care gaps found (with priority level)
-2. Recommended interventions
-3. Any items that need clinical review
+write a clear, actionable summary.
 
-Keep the report concise but complete. A care coordinator should be able to act on it.
+CRITICAL: Every care gap MUST cite the specific clinical guideline that supports it.
+Format: "Per [Guideline Name]: [recommendation]"
+
+Structure your report as:
+1. Care gaps found (with priority level and guideline citation)
+2. Recommended interventions (with specific action and timeline)
+3. Clinical guideline references (list all sources used)
+
+Keep it concise but complete. A care coordinator should be able to act on it immediately.
 """
 
 

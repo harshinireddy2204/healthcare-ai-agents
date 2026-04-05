@@ -1,0 +1,11 @@
+{
+  "uspstf_breast_cancer": "307470fe9f463995",
+  "uspstf_colorectal": "1e0b8340fd57475e",
+  "uspstf_hypertension": "acee75ac633efb8a",
+  "uspstf_diabetes": "a9b9c3187ed28a06",
+  "uspstf_lung_cancer": "839521c4850e7869",
+  "uspstf_depression": "b234469b6f2b8505",
+  "kdigo_ckd_2024": "b68addb6342bb819",
+  "hedis_diabetes_measures": "a91164c2bdab175b",
+  "hedis_colorectal_screening": "a91164c2bdab175b"
+}
