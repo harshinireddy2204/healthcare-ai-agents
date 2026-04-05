@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from openai import RateLimitError
 
 load_dotenv()
 
@@ -106,7 +108,11 @@ def write_audit(patient_id: str, status: str, result: dict):
 
 
 # ── Background task ───────────────────────────────────────────────────────────
-
+@retry(
+    retry=retry_if_exception_type(RateLimitError),
+    wait=wait_exponential(multiplier=1, min=4, max=60),
+    stop=stop_after_attempt(3)
+)
 def run_triage_background(patient_id: str, mode: str):
     """
     Run agent workflow in background. Logs both success and failure

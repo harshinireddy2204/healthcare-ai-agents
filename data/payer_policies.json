@@ -12,17 +12,52 @@
       "max_units": 1,
       "renewal_period_days": 365
     },
+    "nephrology_referral": {
+      "covered": true,
+      "criteria": ["eGFR < 60 mL/min/1.73m2 on two readings"],
+      "requires_prior_auth": false
+    },
+    "biologics_rheumatoid": {
+      "covered": true,
+      "criteria": [
+        "Documented failure of at least 2 DMARDs including Methotrexate",
+        "Active disease with DAS28 score > 3.2",
+        "No active tuberculosis or serious infection"
+      ],
+      "requires_prior_auth": true,
+      "renewal_period_days": 180
+    },
+    "oncology_second_opinion": {
+      "covered": true,
+      "criteria": ["Documented cancer diagnosis", "Referring physician recommendation"],
+      "requires_prior_auth": false
+    },
+    "physical_therapy_extended": {
+      "covered": true,
+      "criteria": [
+        "Neurological diagnosis documented",
+        "Functional decline noted in clinical assessment",
+        "Standard PT course completed (20 sessions)"
+      ],
+      "requires_prior_auth": true,
+      "max_sessions": 20,
+      "renewal_period_days": 180
+    },
+    "radiation_therapy": {
+      "covered": true,
+      "criteria": [
+        "Confirmed malignancy diagnosis",
+        "Radiation oncologist recommendation",
+        "Tumor board review documented"
+      ],
+      "requires_prior_auth": true
+    },
     "cardiac_rehab_standard": {
       "covered": true,
       "criteria": ["Post-MI, post-CABG, or stable angina diagnosis"],
       "requires_prior_auth": false,
       "max_sessions": 36,
       "renewal_period_days": 365
-    },
-    "nephrology_referral": {
-      "covered": true,
-      "criteria": ["eGFR < 60 mL/min/1.73m2 on two readings"],
-      "requires_prior_auth": false
     }
   },
   "Aetna HMO": {
@@ -44,6 +79,21 @@
         "Demonstrated compliance with current insulin regimen"
       ],
       "requires_prior_auth": true
+    },
+    "nephrology_referral": {
+      "covered": true,
+      "criteria": ["eGFR < 60 mL/min/1.73m2 on two readings"],
+      "requires_prior_auth": false
+    },
+    "biologics_crohns": {
+      "covered": true,
+      "criteria": [
+        "Documented moderate-to-severe Crohn's Disease",
+        "Failure of conventional therapy (steroids + immunomodulators)",
+        "No active serious infection"
+      ],
+      "requires_prior_auth": true,
+      "renewal_period_days": 365
     }
   },
   "United Health PPO": {
@@ -55,9 +105,29 @@
     },
     "pulmonary_rehab": {
       "covered": true,
-      "criteria": ["FEV1/FVC < 0.7 on spirometry", "COPD or severe asthma diagnosis"],
+      "criteria": [
+        "FEV1/FVC < 0.7 on spirometry",
+        "COPD or severe asthma diagnosis"
+      ],
       "requires_prior_auth": true,
       "max_sessions": 20
+    },
+    "insulin_pump": {
+      "covered": true,
+      "criteria": [
+        "HbA1c > 8.0% documented within 3 months",
+        "Type 1 or Type 2 Diabetes on insulin therapy"
+      ],
+      "requires_prior_auth": true
+    },
+    "biologics_rheumatoid": {
+      "covered": true,
+      "criteria": [
+        "Documented failure of Methotrexate at therapeutic dose",
+        "Rheumatologist documentation of active disease"
+      ],
+      "requires_prior_auth": true,
+      "renewal_period_days": 365
     }
   }
 }

@@ -125,13 +125,8 @@ if page == "📋 Pending Reviews":
 
                     if review.get("agent_output_preview"):
                         st.markdown("**Agent reasoning (preview):**")
-                        st.text_area(
-                            "Agent output",
-                            value=review["agent_output_preview"],
-                            height=150,
-                            key=f"output_{review['review_id']}",
-                            disabled=True
-                        )
+                        with st.container(border=True):
+                            st.markdown(review["agent_output_preview"])
 
                 with col_right:
                     st.markdown("**Take action:**")
@@ -195,7 +190,7 @@ elif page == "⚡ Process Patient":
     with st.form("process_form"):
         patient_id = st.selectbox(
             "Select patient",
-            ["P001", "P002", "P003"],
+            ["P001","P002","P003","P004","P005","P006","P007","P008","P009","P010","P011","P012","P013","P014","P015","P016","P017","P018","P019","P020"],
             help="Patient IDs from the synthetic dataset"
         )
         mode = st.radio(
@@ -240,11 +235,67 @@ elif page == "📊 Audit Log":
             status_icon = {"COMPLETED": "✅", "PENDING_REVIEW": "⚠️", "FAILED": "❌"}.get(
                 entry["status"], "🔄"
             )
+            result = entry.get("result", {})
+            mode = result.get("mode", "full")
+
             with st.expander(
                 f"{status_icon} Patient {entry['patient_id']} — "
-                f"{entry['status']} — {entry['processed_at'][:16]}"
+                f"{entry['status']} — {entry['processed_at'][:16]}",
+                expanded=False
             ):
-                st.json(entry.get("result", {}))
+                # ── FAILED ────────────────────────────────────────────────────
+                if entry["status"] == "FAILED":
+                    st.error(f"**Error:** {result.get('error', 'Unknown error')}")
+
+                # ── CARE GAP REPORT ───────────────────────────────────────────
+                elif mode == "care_gap_only":
+                    col1, col2 = st.columns(2)
+                    col1.metric("Mode", "Care Gap Review")
+                    col2.metric("Steps Executed", result.get("steps_executed", "—"))
+                    st.markdown("---")
+                    st.markdown("#### 📋 Care Gap Report")
+                    report = result.get("final_report", "")
+                    if report:
+                        st.markdown(report)
+                    else:
+                        st.info("No report generated.")
+
+                # ── PRIOR AUTH RESULTS ────────────────────────────────────────
+                elif mode == "auth_only":
+                    st.markdown("#### 🔐 Prior Authorization Results")
+                    auth_results = result.get("auth_results", [])
+                    if not auth_results:
+                        st.info("No authorization requests found for this patient.")
+                    for r in auth_results:
+                        decision = r.get("decision", "UNKNOWN")
+                        color = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "🔄")
+                        confidence = r.get("confidence", 0)
+                        st.markdown(f"""
+**{color} Request:** `{r.get('request_id')}` — **{r.get('item', '').replace('_', ' ').title()}**
+
+| Field | Value |
+|---|---|
+| Decision | **{decision}** |
+| Confidence | {confidence:.0%} |
+| Justification | {r.get('justification', '—')} |
+""")
+                        st.markdown("---")
+
+                # ── FULL TRIAGE (CrewAI) ──────────────────────────────────────
+                elif mode == "full" or "crew_output" in result:
+                    escalated = result.get("escalation_triggered", False)
+                    st.markdown(f"**Escalation triggered:** {'⚠️ Yes' if escalated else '✅ No'}")
+                    st.markdown("---")
+                    st.markdown("#### 🤖 Supervisor Report")
+                    crew_output = result.get("crew_output", "")
+                    if crew_output:
+                        st.markdown(crew_output)
+                    else:
+                        st.json(result)
+
+                # ── FALLBACK ──────────────────────────────────────────────────
+                else:
+                    st.json(result)
 
 
 # ── Page: System Status ───────────────────────────────────────────────────────

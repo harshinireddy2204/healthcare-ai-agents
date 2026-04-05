@@ -19,12 +19,7 @@
       "pneumonia_vaccine": {"last_date": "2020-01-15"}
     },
     "pending_requests": [
-      {
-        "request_id": "REQ001",
-        "type": "prior_auth",
-        "item": "insulin_pump",
-        "requested_by": "Dr. Martin Hayes"
-      }
+      {"request_id": "REQ001", "type": "prior_auth", "item": "insulin_pump", "requested_by": "Dr. Martin Hayes"}
     ]
   },
   {
@@ -46,12 +41,7 @@
       "cardiac_stress_test": {"last_date": "2022-06-01"}
     },
     "pending_requests": [
-      {
-        "request_id": "REQ002",
-        "type": "prior_auth",
-        "item": "cardiac_rehab_extended",
-        "requested_by": "Dr. Lisa Nguyen"
-      }
+      {"request_id": "REQ002", "type": "prior_auth", "item": "cardiac_rehab_extended", "requested_by": "Dr. Lisa Nguyen"}
     ]
   },
   {
@@ -72,5 +62,373 @@
       "pulmonary_function_test": {"last_date": "2023-01-20"}
     },
     "pending_requests": []
+  },
+  {
+    "patient_id": "P004",
+    "name": "James Whitfield",
+    "age": 72,
+    "gender": "M",
+    "insurance": "BlueCross PPO",
+    "diagnoses": ["Heart Failure", "Atrial Fibrillation", "Type 2 Diabetes", "CKD Stage 4"],
+    "medications": ["Furosemide 40mg", "Warfarin 5mg", "Carvedilol 12.5mg", "Insulin glargine"],
+    "labs": {
+      "HbA1c": {"value": 9.1, "unit": "%", "date": "2024-10-05"},
+      "eGFR": {"value": 22, "unit": "mL/min/1.73m2", "date": "2024-10-05"},
+      "LDL": {"value": 88, "unit": "mg/dL", "date": "2024-09-10"},
+      "HDL": {"value": 42, "unit": "mg/dL", "date": "2024-09-10"}
+    },
+    "screenings": {
+      "flu_vaccine": {"last_date": "2024-09-15"},
+      "colonoscopy": {"last_date": "2017-03-22"},
+      "pneumonia_vaccine": {"last_date": "2022-06-10"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ004", "type": "prior_auth", "item": "nephrology_referral", "requested_by": "Dr. Anna Chen"}
+    ]
+  },
+  {
+    "patient_id": "P005",
+    "name": "Priya Nair",
+    "age": 38,
+    "gender": "F",
+    "insurance": "United Health PPO",
+    "diagnoses": ["Rheumatoid Arthritis", "Osteoporosis"],
+    "medications": ["Methotrexate 15mg", "Folic acid 1mg", "Calcium 1200mg", "Vitamin D 2000IU"],
+    "labs": {
+      "eGFR": {"value": 85, "unit": "mL/min/1.73m2", "date": "2024-08-01"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2024-01-10"},
+      "flu_vaccine": {"last_date": "2024-09-20"},
+      "bone_density": {"last_date": "2023-05-15"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ005", "type": "prior_auth", "item": "biologics_rheumatoid", "requested_by": "Dr. Sarah Park"}
+    ]
+  },
+  {
+    "patient_id": "P006",
+    "name": "Marcus Thompson",
+    "age": 61,
+    "gender": "M",
+    "insurance": "Aetna HMO",
+    "diagnoses": ["COPD", "Hypertension", "Hyperlipidemia"],
+    "medications": ["Tiotropium inhaler", "Albuterol PRN", "Amlodipine 5mg", "Simvastatin 20mg"],
+    "labs": {
+      "LDL": {"value": 118, "unit": "mg/dL", "date": "2024-07-15"},
+      "HDL": {"value": 44, "unit": "mg/dL", "date": "2024-07-15"},
+      "eGFR": {"value": 68, "unit": "mL/min/1.73m2", "date": "2024-07-15"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2020-08-12"},
+      "flu_vaccine": {"last_date": "2024-10-01"},
+      "pulmonary_function_test": {"last_date": "2024-03-10"},
+      "pneumonia_vaccine": {"last_date": "2019-11-20"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ006", "type": "prior_auth", "item": "pulmonary_rehab", "requested_by": "Dr. Kevin Moore"}
+    ]
+  },
+  {
+    "patient_id": "P007",
+    "name": "Linda Okafor",
+    "age": 55,
+    "gender": "F",
+    "insurance": "BlueCross PPO",
+    "diagnoses": ["Breast Cancer - Stage II", "Hypertension"],
+    "medications": ["Tamoxifen 20mg", "Lisinopril 5mg"],
+    "labs": {
+      "eGFR": {"value": 78, "unit": "mL/min/1.73m2", "date": "2024-09-01"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2024-08-05"},
+      "colonoscopy": {"last_date": "2021-02-18"},
+      "flu_vaccine": {"last_date": "2024-09-30"},
+      "bone_density": {"last_date": "2024-01-12"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ007", "type": "prior_auth", "item": "oncology_second_opinion", "requested_by": "Dr. Rachel Kim"}
+    ]
+  },
+  {
+    "patient_id": "P008",
+    "name": "David Hernandez",
+    "age": 47,
+    "gender": "M",
+    "insurance": "United Health PPO",
+    "diagnoses": ["Type 1 Diabetes", "Hypertension"],
+    "medications": ["Insulin lispro", "Insulin glargine", "Metoprolol 25mg"],
+    "labs": {
+      "HbA1c": {"value": 8.8, "unit": "%", "date": "2024-09-20"},
+      "eGFR": {"value": 62, "unit": "mL/min/1.73m2", "date": "2024-09-20"},
+      "LDL": {"value": 95, "unit": "mg/dL", "date": "2024-09-20"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2023-06-14"},
+      "flu_vaccine": {"last_date": "2024-10-01"},
+      "cardiac_stress_test": {"last_date": "2023-11-05"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ008", "type": "prior_auth", "item": "insulin_pump", "requested_by": "Dr. Aisha Patel"}
+    ]
+  },
+  {
+    "patient_id": "P009",
+    "name": "Susan Bergman",
+    "age": 69,
+    "gender": "F",
+    "insurance": "Aetna HMO",
+    "diagnoses": ["Osteoarthritis", "Type 2 Diabetes", "Obesity"],
+    "medications": ["Metformin 500mg", "Meloxicam 15mg", "Pantoprazole 40mg"],
+    "labs": {
+      "HbA1c": {"value": 7.4, "unit": "%", "date": "2024-08-10"},
+      "BMI": {"value": 37.1, "unit": "kg/m2", "date": "2024-09-01"},
+      "eGFR": {"value": 58, "unit": "mL/min/1.73m2", "date": "2024-08-10"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2023-11-08"},
+      "colonoscopy": {"last_date": "2018-04-25"},
+      "flu_vaccine": {"last_date": "2024-09-15"},
+      "bone_density": {"last_date": "2022-07-19"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ009", "type": "prior_auth", "item": "weight_management_program", "requested_by": "Dr. Tom Ellis"}
+    ]
+  },
+  {
+    "patient_id": "P010",
+    "name": "Anthony Rivera",
+    "age": 33,
+    "gender": "M",
+    "insurance": "BlueCross PPO",
+    "diagnoses": ["Crohn's Disease", "Anemia"],
+    "medications": ["Azathioprine 100mg", "Ferrous sulfate 325mg", "Prednisone 10mg PRN"],
+    "labs": {
+      "eGFR": {"value": 92, "unit": "mL/min/1.73m2", "date": "2024-09-05"},
+      "LDL": {"value": 72, "unit": "mg/dL", "date": "2024-09-05"}
+    },
+    "screenings": {
+      "flu_vaccine": {"last_date": "2024-10-01"},
+      "colonoscopy": {"last_date": "2024-01-30"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ010", "type": "prior_auth", "item": "biologics_crohns", "requested_by": "Dr. Nina Patel"}
+    ]
+  },
+  {
+    "patient_id": "P011",
+    "name": "Dorothy Chang",
+    "age": 78,
+    "gender": "F",
+    "insurance": "Aetna HMO",
+    "diagnoses": ["Hypertension", "CKD Stage 3", "Hyperlipidemia", "Osteoporosis"],
+    "medications": ["Amlodipine 10mg", "Atorvastatin 20mg", "Calcium 1200mg", "Vitamin D 1000IU"],
+    "labs": {
+      "eGFR": {"value": 41, "unit": "mL/min/1.73m2", "date": "2024-10-02"},
+      "LDL": {"value": 134, "unit": "mg/dL", "date": "2024-10-02"},
+      "HDL": {"value": 51, "unit": "mg/dL", "date": "2024-10-02"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2022-09-14"},
+      "colonoscopy": {"last_date": "2016-05-20"},
+      "flu_vaccine": {"last_date": "2024-09-10"},
+      "pneumonia_vaccine": {"last_date": "2021-03-08"},
+      "bone_density": {"last_date": "2023-02-14"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ011", "type": "prior_auth", "item": "nephrology_referral", "requested_by": "Dr. James Wu"}
+    ]
+  },
+  {
+    "patient_id": "P012",
+    "name": "Kevin O'Brien",
+    "age": 50,
+    "gender": "M",
+    "insurance": "United Health PPO",
+    "diagnoses": ["Hypertension", "Sleep Apnea", "Obesity"],
+    "medications": ["Hydrochlorothiazide 25mg", "CPAP therapy"],
+    "labs": {
+      "BMI": {"value": 38.5, "unit": "kg/m2", "date": "2024-09-20"},
+      "LDL": {"value": 122, "unit": "mg/dL", "date": "2024-08-15"},
+      "HDL": {"value": 36, "unit": "mg/dL", "date": "2024-08-15"},
+      "eGFR": {"value": 74, "unit": "mL/min/1.73m2", "date": "2024-08-15"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2023-04-10"},
+      "flu_vaccine": {"last_date": "2023-11-01"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ012", "type": "prior_auth", "item": "weight_management_program", "requested_by": "Dr. Fatima Hassan"}
+    ]
+  },
+  {
+    "patient_id": "P013",
+    "name": "Gabrielle Martin",
+    "age": 29,
+    "gender": "F",
+    "insurance": "BlueCross PPO",
+    "diagnoses": ["Type 1 Diabetes", "Celiac Disease"],
+    "medications": ["Insulin lispro", "Insulin glargine"],
+    "labs": {
+      "HbA1c": {"value": 7.9, "unit": "%", "date": "2024-09-01"},
+      "eGFR": {"value": 98, "unit": "mL/min/1.73m2", "date": "2024-09-01"}
+    },
+    "screenings": {
+      "flu_vaccine": {"last_date": "2024-10-01"},
+      "mammogram": {"last_date": null}
+    },
+    "pending_requests": [
+      {"request_id": "REQ013", "type": "prior_auth", "item": "insulin_pump", "requested_by": "Dr. Rebecca Stone"}
+    ]
+  },
+  {
+    "patient_id": "P014",
+    "name": "Harold Washington",
+    "age": 65,
+    "gender": "M",
+    "insurance": "Aetna HMO",
+    "diagnoses": ["Stroke", "Hypertension", "Hyperlipidemia", "Type 2 Diabetes"],
+    "medications": ["Aspirin 81mg", "Clopidogrel 75mg", "Lisinopril 20mg", "Atorvastatin 80mg", "Metformin 1000mg"],
+    "labs": {
+      "HbA1c": {"value": 8.3, "unit": "%", "date": "2024-08-25"},
+      "LDL": {"value": 67, "unit": "mg/dL", "date": "2024-08-25"},
+      "eGFR": {"value": 55, "unit": "mL/min/1.73m2", "date": "2024-08-25"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2021-10-05"},
+      "flu_vaccine": {"last_date": "2024-09-20"},
+      "cardiac_stress_test": {"last_date": "2024-02-14"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ014", "type": "prior_auth", "item": "cardiac_rehab_extended", "requested_by": "Dr. Olivia Grant"}
+    ]
+  },
+  {
+    "patient_id": "P015",
+    "name": "Mei-Ling Zhou",
+    "age": 45,
+    "gender": "F",
+    "insurance": "United Health PPO",
+    "diagnoses": ["Lupus", "Hypertension"],
+    "medications": ["Hydroxychloroquine 200mg", "Prednisone 5mg", "Amlodipine 5mg"],
+    "labs": {
+      "eGFR": {"value": 70, "unit": "mL/min/1.73m2", "date": "2024-09-10"},
+      "LDL": {"value": 101, "unit": "mg/dL", "date": "2024-09-10"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2024-03-15"},
+      "colonoscopy": {"last_date": "2022-07-08"},
+      "flu_vaccine": {"last_date": "2024-10-01"},
+      "bone_density": {"last_date": "2023-08-20"}
+    },
+    "pending_requests": []
+  },
+  {
+    "patient_id": "P016",
+    "name": "Frank Deluca",
+    "age": 58,
+    "gender": "M",
+    "insurance": "BlueCross PPO",
+    "diagnoses": ["Parkinson's Disease", "Depression", "Hypertension"],
+    "medications": ["Levodopa/Carbidopa 25/100mg", "Sertraline 50mg", "Metoprolol 50mg"],
+    "labs": {
+      "eGFR": {"value": 66, "unit": "mL/min/1.73m2", "date": "2024-08-20"},
+      "LDL": {"value": 109, "unit": "mg/dL", "date": "2024-08-20"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2020-11-18"},
+      "flu_vaccine": {"last_date": "2024-09-15"},
+      "cardiac_stress_test": {"last_date": "2023-04-22"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ016", "type": "prior_auth", "item": "physical_therapy_extended", "requested_by": "Dr. Claire Adams"}
+    ]
+  },
+  {
+    "patient_id": "P017",
+    "name": "Aisha Mohammed",
+    "age": 36,
+    "gender": "F",
+    "insurance": "Aetna HMO",
+    "diagnoses": ["Polycystic Ovary Syndrome", "Prediabetes", "Obesity"],
+    "medications": ["Metformin 500mg", "Spironolactone 50mg"],
+    "labs": {
+      "HbA1c": {"value": 6.0, "unit": "%", "date": "2024-09-01"},
+      "BMI": {"value": 32.8, "unit": "kg/m2", "date": "2024-09-01"},
+      "LDL": {"value": 115, "unit": "mg/dL", "date": "2024-09-01"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": null},
+      "flu_vaccine": {"last_date": "2024-10-01"},
+      "colonoscopy": {"last_date": null}
+    },
+    "pending_requests": []
+  },
+  {
+    "patient_id": "P018",
+    "name": "Raymond Foster",
+    "age": 74,
+    "gender": "M",
+    "insurance": "BlueCross PPO",
+    "diagnoses": ["Prostate Cancer - Stage I", "Type 2 Diabetes", "Hypertension", "CKD Stage 3"],
+    "medications": ["Bicalutamide 50mg", "Metformin 1000mg", "Amlodipine 5mg", "Tamsulosin 0.4mg"],
+    "labs": {
+      "HbA1c": {"value": 7.8, "unit": "%", "date": "2024-09-15"},
+      "eGFR": {"value": 48, "unit": "mL/min/1.73m2", "date": "2024-09-15"},
+      "LDL": {"value": 98, "unit": "mg/dL", "date": "2024-09-15"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2019-08-14"},
+      "flu_vaccine": {"last_date": "2024-09-01"},
+      "pneumonia_vaccine": {"last_date": "2020-10-05"},
+      "cardiac_stress_test": {"last_date": "2023-01-30"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ018", "type": "prior_auth", "item": "radiation_therapy", "requested_by": "Dr. Steven Park"}
+    ]
+  },
+  {
+    "patient_id": "P019",
+    "name": "Natalie Russo",
+    "age": 41,
+    "gender": "F",
+    "insurance": "United Health PPO",
+    "diagnoses": ["Migraine", "Anxiety", "Hypothyroidism"],
+    "medications": ["Sumatriptan 50mg PRN", "Sertraline 100mg", "Levothyroxine 75mcg"],
+    "labs": {
+      "eGFR": {"value": 88, "unit": "mL/min/1.73m2", "date": "2024-08-01"},
+      "LDL": {"value": 105, "unit": "mg/dL", "date": "2024-08-01"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2023-07-22"},
+      "colonoscopy": {"last_date": null},
+      "flu_vaccine": {"last_date": "2024-10-01"}
+    },
+    "pending_requests": []
+  },
+  {
+    "patient_id": "P020",
+    "name": "Charles Obi",
+    "age": 62,
+    "gender": "M",
+    "insurance": "Aetna HMO",
+    "diagnoses": ["Hypertension", "Type 2 Diabetes", "Hyperlipidemia", "Obesity"],
+    "medications": ["Metformin 2000mg", "Lisinopril 40mg", "Rosuvastatin 40mg"],
+    "labs": {
+      "HbA1c": {"value": 9.5, "unit": "%", "date": "2024-10-01"},
+      "LDL": {"value": 155, "unit": "mg/dL", "date": "2024-10-01"},
+      "HDL": {"value": 33, "unit": "mg/dL", "date": "2024-10-01"},
+      "eGFR": {"value": 61, "unit": "mL/min/1.73m2", "date": "2024-10-01"},
+      "BMI": {"value": 36.4, "unit": "kg/m2", "date": "2024-10-01"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2018-09-12"},
+      "flu_vaccine": {"last_date": "2023-10-20"},
+      "cardiac_stress_test": {"last_date": "2022-05-18"},
+      "pneumonia_vaccine": {"last_date": "2019-08-30"}
+    },
+    "pending_requests": [
+      {"request_id": "REQ020", "type": "prior_auth", "item": "insulin_pump", "requested_by": "Dr. Patricia Lowe"}
+    ]
   }
 ]
