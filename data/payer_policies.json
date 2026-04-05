@@ -1,0 +1,63 @@
+{
+  "BlueCross PPO": {
+    "insulin_pump": {
+      "covered": true,
+      "criteria": [
+        "HbA1c > 9.0% documented within 6 months",
+        "Patient trialed at least 2 oral hypoglycemic agents",
+        "Type 1 or insulin-dependent Type 2 Diabetes diagnosis",
+        "Prescribing physician attestation required"
+      ],
+      "requires_prior_auth": true,
+      "max_units": 1,
+      "renewal_period_days": 365
+    },
+    "cardiac_rehab_standard": {
+      "covered": true,
+      "criteria": ["Post-MI, post-CABG, or stable angina diagnosis"],
+      "requires_prior_auth": false,
+      "max_sessions": 36,
+      "renewal_period_days": 365
+    },
+    "nephrology_referral": {
+      "covered": true,
+      "criteria": ["eGFR < 60 mL/min/1.73m2 on two readings"],
+      "requires_prior_auth": false
+    }
+  },
+  "Aetna HMO": {
+    "cardiac_rehab_extended": {
+      "covered": true,
+      "criteria": [
+        "Completed standard 36-session program",
+        "Physician documents ongoing medical necessity",
+        "LDL > 130 mg/dL or HDL < 40 mg/dL at re-evaluation"
+      ],
+      "requires_prior_auth": true,
+      "max_sessions": 18,
+      "renewal_period_days": 180
+    },
+    "insulin_pump": {
+      "covered": true,
+      "criteria": [
+        "HbA1c > 8.5% on last two readings",
+        "Demonstrated compliance with current insulin regimen"
+      ],
+      "requires_prior_auth": true
+    }
+  },
+  "United Health PPO": {
+    "weight_management_program": {
+      "covered": true,
+      "criteria": ["BMI >= 30 or BMI >= 27 with comorbidity"],
+      "requires_prior_auth": false,
+      "max_sessions": 12
+    },
+    "pulmonary_rehab": {
+      "covered": true,
+      "criteria": ["FEV1/FVC < 0.7 on spirometry", "COPD or severe asthma diagnosis"],
+      "requires_prior_auth": true,
+      "max_sessions": 20
+    }
+  }
+}

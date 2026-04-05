@@ -1,0 +1,76 @@
+[
+  {
+    "patient_id": "P001",
+    "name": "Eleanor Vance",
+    "age": 67,
+    "gender": "F",
+    "insurance": "BlueCross PPO",
+    "diagnoses": ["Type 2 Diabetes", "Hypertension", "CKD Stage 3"],
+    "medications": ["Metformin 1000mg", "Lisinopril 10mg", "Atorvastatin 40mg"],
+    "labs": {
+      "HbA1c": {"value": 10.2, "unit": "%", "date": "2024-09-15"},
+      "eGFR": {"value": 45, "unit": "mL/min/1.73m2", "date": "2024-10-01"},
+      "blood_pressure": {"value": "148/92", "unit": "mmHg", "date": "2024-10-10"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2023-03-20"},
+      "colonoscopy": {"last_date": "2019-06-10"},
+      "flu_vaccine": {"last_date": "2024-09-01"},
+      "pneumonia_vaccine": {"last_date": "2020-01-15"}
+    },
+    "pending_requests": [
+      {
+        "request_id": "REQ001",
+        "type": "prior_auth",
+        "item": "insulin_pump",
+        "requested_by": "Dr. Martin Hayes"
+      }
+    ]
+  },
+  {
+    "patient_id": "P002",
+    "name": "Robert Callahan",
+    "age": 54,
+    "gender": "M",
+    "insurance": "Aetna HMO",
+    "diagnoses": ["Coronary Artery Disease", "Hyperlipidemia"],
+    "medications": ["Aspirin 81mg", "Clopidogrel 75mg", "Rosuvastatin 20mg"],
+    "labs": {
+      "LDL": {"value": 142, "unit": "mg/dL", "date": "2024-08-20"},
+      "HDL": {"value": 38, "unit": "mg/dL", "date": "2024-08-20"},
+      "eGFR": {"value": 72, "unit": "mL/min/1.73m2", "date": "2024-08-20"}
+    },
+    "screenings": {
+      "colonoscopy": {"last_date": "2022-11-05"},
+      "flu_vaccine": {"last_date": "2023-10-15"},
+      "cardiac_stress_test": {"last_date": "2022-06-01"}
+    },
+    "pending_requests": [
+      {
+        "request_id": "REQ002",
+        "type": "prior_auth",
+        "item": "cardiac_rehab_extended",
+        "requested_by": "Dr. Lisa Nguyen"
+      }
+    ]
+  },
+  {
+    "patient_id": "P003",
+    "name": "Maria Santos",
+    "age": 43,
+    "gender": "F",
+    "insurance": "United Health PPO",
+    "diagnoses": ["Asthma", "Obesity", "Prediabetes"],
+    "medications": ["Albuterol inhaler", "Fluticasone inhaler", "Metformin 500mg"],
+    "labs": {
+      "HbA1c": {"value": 6.1, "unit": "%", "date": "2024-07-10"},
+      "BMI": {"value": 34.2, "unit": "kg/m2", "date": "2024-09-05"}
+    },
+    "screenings": {
+      "mammogram": {"last_date": "2022-05-15"},
+      "flu_vaccine": {"last_date": "2024-10-01"},
+      "pulmonary_function_test": {"last_date": "2023-01-20"}
+    },
+    "pending_requests": []
+  }
+]
