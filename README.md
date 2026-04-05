@@ -315,4 +315,4 @@ All patient data in `data/synthetic_patients.json` is fully synthetic and HIPAA-
 
 **Harshini Reddy**  
 Business & Data Analyst | AI Engineer  
-[LinkedIn](https://linkedin.com/in/harshinireddy) · [GitHub](https://github.com/harshinireddy2204)
+[LinkedIn](https://www.linkedin.com/in/harshini-reddy22/) · [GitHub](https://github.com/harshinireddy2204)
