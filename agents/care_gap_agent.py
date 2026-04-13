@@ -6,10 +6,10 @@ Care Gap Agent — LangGraph Plan-and-Execute pattern.
 Unlike ReAct which reasons one step at a time, Plan-and-Execute:
   1. [PLAN]    Generates a full list of checks to perform
   2. [EXECUTE] Runs each check sequentially using tools
-  3. [REPORT]  Synthesizes findings into actionable care gaps
+  3. [REPORT]  Synthesizes findings into actionable care gaps with guideline citations
 
-This is better for care gap detection because all the checks are known
-upfront and can be planned systematically.
+RAG integration: agents now call search_clinical_guidelines() to ground
+every care gap finding in a specific USPSTF, ADA, CDC, or KDIGO citation.
 """
 import os
 from typing import Annotated, TypedDict, Optional
@@ -23,7 +23,22 @@ from langgraph.prebuilt import ToolNode
 
 from tools.ehr_tools import EHR_TOOLS
 from tools.risk_tools import RISK_TOOLS
-from rag.retriever import GUIDELINE_TOOLS
+
+def _get_all_tools_with_kg():
+    """Load all tools including knowledge graph if available."""
+    tools = EHR_TOOLS + RISK_TOOLS
+    try:
+        from rag.retriever import GUIDELINE_TOOLS
+        tools = tools + GUIDELINE_TOOLS
+    except Exception:
+        pass
+    try:
+        from knowledge_graph.clinical_graph import KNOWLEDGE_GRAPH_TOOLS
+        tools = tools + KNOWLEDGE_GRAPH_TOOLS
+        print("[CareGapAgent] Knowledge graph tools loaded ✓")
+    except Exception as e:
+        print(f"[CareGapAgent] KG tools not available: {e}")
+    return tools
 
 load_dotenv()
 
@@ -32,32 +47,36 @@ load_dotenv()
 class CareGapState(TypedDict):
     messages: Annotated[list, add_messages]
     patient_id: str
-    plan: list[str]        # list of check steps to execute
-    plan_index: int        # which plan step we're on
-    completed_checks: list # results gathered so far
-    gaps_found: list       # identified care gaps
+    plan: list[str]
+    plan_index: int
+    completed_checks: list
+    gaps_found: list
     final_report: str
 
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+# ── Tools (EHR + Risk + RAG Guidelines) ───────────────────────────────────────
 
-ALL_TOOLS = EHR_TOOLS + RISK_TOOLS + GUIDELINE_TOOLS
+def _get_all_tools_orig():
+    """Load all tools including guideline search if available."""
+    tools = EHR_TOOLS + RISK_TOOLS
+    try:
+        from rag.retriever import GUIDELINE_TOOLS
+        tools = tools + GUIDELINE_TOOLS
+        print("[CareGapAgent] RAG guideline tools loaded ✓")
+    except Exception as e:
+        print(f"[CareGapAgent] RAG tools not available (run refresh_flow.py first): {e}")
+    return tools
 
 
-# ── Lazy LLM factory (called inside each node, not at import time) ─────────────
+# ── Lazy LLM factory ──────────────────────────────────────────────────────────
 
 def get_llms():
-    """
-    Create LLM instances inside the function so they are only
-    initialized when actually called — not at module import time.
-    This prevents 'str has no attribute bind_tools' when the module
-    is imported in a background thread before .env loads.
-    """
     load_dotenv()
-    model = os.getenv("MODEL_NAME", "gpt-4o")
+    model = os.getenv("MODEL_NAME", "gpt-4o-mini")
+    all_tools = _get_all_tools_with_kg()
     planner = ChatOpenAI(model=model, temperature=0)
-    executor = ChatOpenAI(model=model, temperature=0).bind_tools(ALL_TOOLS)
-    tools = ToolNode(ALL_TOOLS)
+    executor = ChatOpenAI(model=model, temperature=0).bind_tools(all_tools)
+    tools = ToolNode(all_tools)
     return planner, executor, tools
 
 
@@ -68,45 +87,52 @@ a systematic review of a patient's preventive care needs.
 
 Given a patient ID, generate a numbered list of specific data checks to perform.
 Each check should be a single concrete action. Always include a step to search
-clinical guidelines to ground your findings in evidence.
+clinical guidelines for evidence-based citations.
 
 Example plan:
   1. Get patient demographics (age, gender, diagnoses)
   2. Check mammogram screening history
-  3. Check colonoscopy history
-  4. Check flu vaccine history
-  5. Check most recent HbA1c (if diabetic)
-  6. Search clinical guidelines for diabetes care gaps
-  7. Search clinical guidelines for preventive screening recommendations
-  8. Calculate risk score
+  3. Search clinical guidelines for mammogram recommendations (if female 40+)
+  4. Check colonoscopy history
+  5. Check flu vaccine history
+  6. Calculate risk score
+  7. Search clinical guidelines for any identified care gaps
 
-Output ONLY the numbered list, nothing else. Be specific about what to look up.
+Output ONLY the numbered list, nothing else.
 """
 
 EXECUTOR_SYSTEM = """You are executing a care gap check for a patient.
 Use the available tools to complete the current step.
-After calling tools, summarize what you found in 1-2 sentences.
+
+When you use the search_clinical_guidelines tool, include the specific
+guideline text in your summary so it can be cited in the final report.
+
+After calling tools, summarize what you found in 1-2 sentences, including
+any guideline citations retrieved.
 """
 
 REPORTER_SYSTEM = """You are a care gap report writer. Given the completed checks,
-write a clear, actionable summary.
+write a clear, actionable summary that includes:
 
-CRITICAL: Every care gap MUST cite the specific clinical guideline that supports it.
-Format: "Per [Guideline Name]: [recommendation]"
+1. Care gaps found (with priority level)
+2. The specific clinical guideline supporting each gap (cite source name and key criteria)
+3. Recommended interventions
+4. Any items that need clinical review
 
-Structure your report as:
-1. Care gaps found (with priority level and guideline citation)
-2. Recommended interventions (with specific action and timeline)
-3. Clinical guideline references (list all sources used)
+Format guideline citations as: [Source Name] — key recommendation text.
 
-Keep it concise but complete. A care coordinator should be able to act on it immediately.
+Example:
+- Mammogram overdue — HIGH priority
+  [USPSTF: Breast Cancer Screening] — Recommends biennial mammography for women 40-74 years
+  Action: Schedule mammogram within 30 days
+
+Keep the report actionable and clinically grounded.
 """
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 
 def plan_node(state: CareGapState) -> dict:
-    """Node: generate a list of checks to perform for this patient."""
     planner_llm, _, _ = get_llms()
 
     response = planner_llm.invoke([
@@ -114,7 +140,6 @@ def plan_node(state: CareGapState) -> dict:
         HumanMessage(content=f"Create a care gap review plan for patient {state['patient_id']}.")
     ])
 
-    # Parse the numbered list into individual steps
     plan_steps = []
     for line in response.content.strip().split("\n"):
         line = line.strip()
@@ -130,7 +155,6 @@ def plan_node(state: CareGapState) -> dict:
 
 
 def execute_step_node(state: CareGapState) -> dict:
-    """Node: execute the current plan step using tools."""
     _, executor_llm, tool_node = get_llms()
 
     current_step = state["plan"][state["plan_index"]]
@@ -149,13 +173,10 @@ def execute_step_node(state: CareGapState) -> dict:
     response = executor_llm.invoke(messages)
     new_messages = [response]
 
-    # If tools were called, run them
     if hasattr(response, "tool_calls") and response.tool_calls:
         messages_with_tools = messages + [response]
         tool_results = tool_node.invoke({"messages": messages_with_tools})
         new_messages.extend(tool_results["messages"])
-
-        # Get the final summary after tool calls
         all_msgs = messages + new_messages
         final = executor_llm.invoke(all_msgs)
         new_messages.append(final)
@@ -174,14 +195,12 @@ def execute_step_node(state: CareGapState) -> dict:
 
 
 def should_continue_plan(state: CareGapState) -> str:
-    """Edge: continue executing steps or move to reporting."""
     if state["plan_index"] < len(state["plan"]):
         return "execute_step"
     return "report"
 
 
 def report_node(state: CareGapState) -> dict:
-    """Node: synthesize all check results into a care gap report."""
     planner_llm, _, _ = get_llms()
 
     checks_summary = "\n".join([
@@ -195,7 +214,7 @@ def report_node(state: CareGapState) -> dict:
             content=(
                 f"Patient: {state['patient_id']}\n\n"
                 f"Completed checks:\n{checks_summary}\n\n"
-                f"Write the care gap report."
+                f"Write the care gap report with guideline citations."
             )
         )
     ])
@@ -227,18 +246,10 @@ def build_care_gap_graph() -> StateGraph:
     return graph.compile()
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
-
 care_gap_graph = build_care_gap_graph()
 
 
 def run_care_gap_review(patient_id: str) -> dict:
-    """
-    Run the care gap Plan-and-Execute agent for a single patient.
-
-    Returns:
-        dict with patient_id, plan, completed_checks, final_report
-    """
     result = care_gap_graph.invoke({
         "messages": [],
         "patient_id": patient_id,
@@ -257,8 +268,6 @@ def run_care_gap_review(patient_id: str) -> dict:
         "final_report": result["final_report"]
     }
 
-
-# ── CLI test ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     result = run_care_gap_review("P001")

@@ -3,14 +3,9 @@ agents/prior_auth_agent.py
 
 Prior Authorization Agent — LangGraph ReAct loop.
 
-Reasoning pattern:
-  [Reason] What data do I need to evaluate this auth request?
-  [Act]    Call EHR / payer tools
-  [Observe] Process tool results
-  [Repeat] Until a final APPROVE / DENY / ESCALATE decision is reached
-
-The agent traces every step to LangSmith automatically via the
-LANGCHAIN_TRACING_V2 environment variable.
+RAG integration: the agent can now call search_clinical_guidelines()
+to retrieve coverage criteria from USPSTF, ADA, KDIGO, and ACC/AHA
+guidelines to support or challenge payer coverage decisions.
 """
 import os
 from typing import Annotated, TypedDict, Literal
@@ -30,36 +25,53 @@ load_dotenv()
 # ── State ──────────────────────────────────────────────────────────────────────
 
 class AuthState(TypedDict):
-    """State that flows through the prior auth graph nodes."""
     messages: Annotated[list, add_messages]
     patient_id: str
     request_id: str
-    decision: str          # APPROVE | DENY | ESCALATE | PENDING
+    decision: str
     confidence: float
     justification: str
 
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+# ── Tools (EHR + Payer + RAG Guidelines) ──────────────────────────────────────
 
-ALL_TOOLS = EHR_TOOLS + PAYER_TOOLS
+def _get_all_tools_kg():
+    """Load EHR + Payer + RAG + Knowledge Graph tools."""
+    tools = EHR_TOOLS + PAYER_TOOLS
+    try:
+        from rag.retriever import GUIDELINE_TOOLS
+        tools = tools + GUIDELINE_TOOLS
+    except Exception:
+        pass
+    try:
+        from knowledge_graph.clinical_graph import KNOWLEDGE_GRAPH_TOOLS
+        tools = tools + KNOWLEDGE_GRAPH_TOOLS
+        print("[PriorAuthAgent] Knowledge graph tools loaded ✓")
+    except Exception as e:
+        pass
+    return tools
+    tools = EHR_TOOLS + PAYER_TOOLS
+    try:
+        from rag.retriever import GUIDELINE_TOOLS
+        tools = tools + GUIDELINE_TOOLS
+        print("[PriorAuthAgent] RAG guideline tools loaded ✓")
+    except Exception as e:
+        print(f"[PriorAuthAgent] RAG tools not available: {e}")
+    return tools
 
 
 # ── Lazy LLM factory ──────────────────────────────────────────────────────────
 
 def get_llm():
-    """
-    Create LLM instance inside the function so it is only initialized
-    when actually called — not at module import time.
-    Prevents bind_tools errors when imported in background threads.
-    """
     load_dotenv()
-    model = os.getenv("MODEL_NAME", "gpt-4o")
-    llm = ChatOpenAI(model=model, temperature=0).bind_tools(ALL_TOOLS)
-    tool_node = ToolNode(ALL_TOOLS)
+    model = os.getenv("MODEL_NAME", "gpt-4o-mini")
+    all_tools = _get_all_tools_kg()
+    llm = ChatOpenAI(model=model, temperature=0).bind_tools(all_tools)
+    tool_node = ToolNode(all_tools)
     return llm, tool_node
 
 
-# ── Prompts ───────────────────────────────────────────────────────────────────
+# ── Prompt ────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a clinical prior authorization specialist AI agent.
 Your job is to evaluate whether a prior authorization request should be approved,
@@ -68,25 +80,30 @@ denied, or escalated to a human reviewer.
 For every request you must:
 1. Retrieve the patient's demographics and relevant lab results using EHR tools
 2. Look up the payer's coverage policy for the requested item
-3. Check whether the patient meets the coverage criteria
-4. Make a final decision: APPROVE, DENY, or ESCALATE
+3. Search clinical guidelines (search_clinical_guidelines) to verify the clinical
+   appropriateness of the requested item based on the patient's condition
+4. Check whether the patient meets the coverage criteria
+5. Make a final decision: APPROVE, DENY, or ESCALATE
 
 ESCALATE when:
 - Criteria evaluation requires clinical judgment beyond the data
 - A criterion says "manual_review_required"
 - You are less than 75% confident in your determination
 
-Always end your response with a structured decision block:
+When guidelines support the auth request but the payer policy is unclear,
+cite the guideline in your justification (e.g. "ADA 2025 recommends insulin pump
+for HbA1c > 9% — patient qualifies").
+
+Always end your response with:
 DECISION: [APPROVE|DENY|ESCALATE]
 CONFIDENCE: [0.0-1.0]
-JUSTIFICATION: [one sentence summary]
+JUSTIFICATION: [one sentence including guideline citation if applicable]
 """
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 
 def call_agent(state: AuthState) -> dict:
-    """Node: invoke the LLM with current messages."""
     llm, _ = get_llm()
 
     messages = state["messages"]
@@ -98,13 +115,11 @@ def call_agent(state: AuthState) -> dict:
 
 
 def run_tools(state: AuthState) -> dict:
-    """Node: execute any tool calls in the last message."""
     _, tool_node = get_llm()
     return tool_node.invoke(state)
 
 
 def parse_decision(state: AuthState) -> dict:
-    """Node: extract the structured decision from the last AI message."""
     last_message = state["messages"][-1]
     content = last_message.content if hasattr(last_message, "content") else ""
 
@@ -134,7 +149,6 @@ def parse_decision(state: AuthState) -> dict:
 
 
 def should_continue(state: AuthState) -> Literal["run_tools", "parse_decision"]:
-    """Edge: route to tools if there are pending tool calls, else finalize."""
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "run_tools"
@@ -152,31 +166,24 @@ def build_prior_auth_graph() -> StateGraph:
 
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue)
-    graph.add_edge("run_tools", "agent")   # loop back after tool use
+    graph.add_edge("run_tools", "agent")
     graph.add_edge("parse_decision", END)
 
     return graph.compile()
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
-
 prior_auth_graph = build_prior_auth_graph()
 
 
 def run_prior_auth(patient_id: str, request_id: str, item_name: str) -> dict:
-    """
-    Run the prior authorization ReAct agent for a single request.
-
-    Returns:
-        dict with patient_id, request_id, decision, confidence, justification
-    """
     initial_message = HumanMessage(
         content=(
             f"Please evaluate prior authorization request {request_id} "
             f"for patient {patient_id}. "
             f"The requested item is: {item_name}. "
-            f"Use the available tools to check patient data and payer policy, "
-            f"then make a determination."
+            f"Use EHR tools to check patient data, payer tools to check coverage policy, "
+            f"and search_clinical_guidelines to find supporting clinical evidence. "
+            f"Then make a determination."
         )
     )
 
@@ -198,8 +205,6 @@ def run_prior_auth(patient_id: str, request_id: str, item_name: str) -> dict:
         "justification": result["justification"],
     }
 
-
-# ── CLI test ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     result = run_prior_auth("P001", "REQ001", "insulin_pump")

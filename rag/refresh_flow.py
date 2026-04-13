@@ -18,11 +18,11 @@ Run manually:
 Run with force (re-embed everything):
     python rag/refresh_flow.py --force
 """
-
-import json
 import sys
-from datetime import datetime
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import json
+from datetime import datetime
 from typing import Optional, List
 
 from prefect import flow, task, get_run_logger
@@ -217,3 +217,14 @@ if __name__ == "__main__":
     print(f"Sources unchanged: {result['sources_unchanged']}")
     print(f"Total chunks: {result['total_chunks']}")
     print(f"Validation: {result['validation']}")
+
+def get_refresh_log(limit: int = 50) -> list:
+    """Read the refresh log file and return entries."""
+    if not REFRESH_LOG.exists():
+        return []
+    try:
+        with open(REFRESH_LOG) as f:
+            data = json.load(f)
+        return data[:limit]
+    except Exception:
+        return []
