@@ -1,87 +1,185 @@
-# Healthcare AI Multi-Agent Workflow System
+# Healthcare AI Multi-Agent System
+### Built on the same architecture as Innovaccer Gravity™
 
-> A production-grade, multi-agent system that automates clinical operations tasks — prior authorization review, care gap detection, and patient risk triage — using LangGraph, CrewAI, MCP tools, Prefect orchestration, and a human-in-the-loop escalation layer.
+> A production-grade, multi-agent clinical operations platform that automates prior authorization, care gap detection, and patient risk triage — independently built to demonstrate readiness for customer-facing AI consulting delivery at health systems like Mass General Brigham.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2-green.svg)](https://langchain-ai.github.io/langgraph/)
 [![CrewAI](https://img.shields.io/badge/CrewAI-0.80-purple.svg)](https://crewai.com)
 [![Prefect](https://img.shields.io/badge/Prefect-3.x-coral.svg)](https://prefect.io)
 [![LangSmith](https://img.shields.io/badge/LangSmith-traced-orange.svg)](https://smith.langchain.com)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-teal.svg)](https://fastapi.tiangolo.com)
+[![FHIR R4](https://img.shields.io/badge/FHIR-R4-red.svg)](https://hl7.org/fhir/R4/)
+[![Snowflake](https://img.shields.io/badge/Snowflake-compatible-blue.svg)](https://snowflake.com)
 
 ---
 
-## Problem Statement
+## What This Demonstrates for a Consulting Role
 
-Clinical operations teams at healthcare organizations spend significant manual effort on:
-- **Prior authorization** — verifying whether a treatment meets payer coverage criteria
-- **Care gap detection** — identifying patients missing preventive measures or follow-ups
-- **Risk triage** — prioritizing high-risk patients for proactive outreach
+This project is a working proof-of-concept of what an Applied AI & Analytics Consultant would build and deliver on-site at a health system customer. It covers every dimension of the role:
 
-This system automates all three workflows using specialized AI agents that reason over patient data, apply payer policy rules, and escalate ambiguous cases to clinicians for review.
+| Role Requirement | How This Project Demonstrates It |
+|---|---|
+| End-to-end data pipelines (ETL/ELT) | FHIR R4 ingestion → normalization → audit log → dbt mart |
+| Data quality frameworks | `analytics/data_quality.py` — 10 validation rules, quality scoring |
+| SQL + data modeling | `analytics/queries.py` — cohort analysis, SLA metrics, care gap rates |
+| AI agents and agentic workflows | 5 LangGraph + CrewAI agents running end-to-end |
+| Predictive / ML models | Risk scoring (Charlson-inspired), complexity classification |
+| BI dashboards | 8-tab Streamlit dashboard with live analytics |
+| AI orchestration | Prefect 3.x scheduled flows with retries |
+| Customer-facing delivery | HITL clinician dashboard, audit trail, SLA reporting |
+| LLM prompt engineering | 8 specialized system prompts across agent types |
+| API design + integration | FastAPI with 8 endpoints, FHIR R4 client |
+
+---
+
+## How It Maps to Innovaccer's Product Stack
+
+Innovaccer's Gravity™ platform (launched May 2025) delivers the exact use cases this system automates:
+
+| Innovaccer Product | This System's Equivalent | Key Difference |
+|---|---|---|
+| **Flow Auth** (prior auth automation) | `agents/prior_auth_agent.py` — LangGraph ReAct + Agent/Critic | Added Agent/Critic review pattern (MALADE, MLHC 2024) for higher accuracy |
+| **Gravity Agentic AI** (care management) | `agents/care_gap_agent.py` — Plan-and-Execute with RAG citations | RAG over 63 clinical guidelines with cross-encoder reranking |
+| **Galaxy** (HEDIS/quality analytics) | `analytics/queries.py` + `dbt/models/` | dbt mart produces HEDIS-reportable care gap metrics |
+| **Gravity Data Fabric** (FHIR ingestion) | `tools/ehr_tools.py` — FHIR R4 dual-mode client | Supports synthetic + live HAPI FHIR server queries |
+| **Snowflake integration** | PostgreSQL-compatible, Snowflake-ready SQL | All queries use standard SQL, no SQLite-specific syntax |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      FastAPI Service                        │
-│              POST /process-patient  GET /reviews            │
-└────────────────────────────┬────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Complexity Router (MDAgents)                      │
+│         LOW → single agent | MODERATE → MDT | HIGH → ICT           │
+└──────────────────────┬──────────────────────────────────────────────┘
+                       │
+       ┌───────────────┼───────────────────────┐
+       │               │                       │
+┌──────▼──────┐ ┌──────▼──────┐  ┌─────────────▼───────────┐
+│ Prior Auth  │ │  Care Gap   │  │    Drug Safety Agent    │
+│  LangGraph  │ │  LangGraph  │  │   OpenFDA Real-time     │
+│ ReAct+Critic│ │Plan+Execute │  │   + Knowledge Graph     │
+└──────┬──────┘ └──────┬──────┘  └─────────────┬───────────┘
+       │               │                       │
+┌──────▼───────────────▼───────────────────────▼───────────┐
+│                     Tool Layer (MCP-style)                │
+│  FHIR R4 (Patient/Condition/Observation/MedicationReq)   │
+│  OpenFDA API (drug labels, adverse events, no key needed)│
+│  Clinical Knowledge Graph (93 nodes, 67 evidence edges)  │
+│  RAG: 63 guideline sources, ChromaDB + cross-encoder     │
+└────────────────────────────┬─────────────────────────────┘
                              │
-┌────────────────────────────▼────────────────────────────────┐
-│              CrewAI Triage Supervisor Agent                  │
-│    Routes tasks · Scores confidence · Escalates to HITL     │
-└──────────┬──────────────────┬─────────────────┬─────────────┘
-           │                  │                  │
-    ┌──────▼──────┐   ┌───────▼──────┐   ┌──────▼──────┐
-    │ Prior Auth  │   │  Care Gap    │   │ Risk Triage │
-    │   Agent     │   │   Agent      │   │   Agent     │
-    │  LangGraph  │   │  LangGraph   │   │  LangGraph  │
-    │  ReAct Loop │   │ Plan+Execute │   │   Scoring   │
-    └──────┬──────┘   └───────┬──────┘   └──────┬──────┘
-           │                  │                  │
-┌──────────▼──────────────────▼──────────────────▼──────────┐
-│                    MCP Tool Layer                           │
-│   EHR Tools        Payer Policy Tools     Risk Tools       │
-│  (patient data,    (coverage rules,      (comorbidity,     │
-│   labs, history)    formulary, limits)    risk scores)     │
-└────────────────────────────┬──────────────────────────────┘
+┌────────────────────────────▼─────────────────────────────┐
+│              Production Infrastructure                    │
+│  Prefect (scheduling, retries) | LangSmith (tracing)     │
+│  FastAPI (REST API) | PostgreSQL/SQLite (audit + HITL)   │
+│  dbt models | Data Quality Framework | SQL Analytics      │
+└────────────────────────────┬─────────────────────────────┘
                              │
-┌────────────────────────────▼──────────────────────────────┐
-│                  Observability & Storage                    │
-│   Prefect (scheduling, retries)  LangSmith (tracing)       │
-│   SQLite (HITL queue)            FastAPI (REST API)        │
-└────────────────────────────┬──────────────────────────────┘
-                             │
-┌────────────────────────────▼──────────────────────────────┐
-│            Streamlit Human-in-the-Loop Dashboard           │
-│     Pending reviews · Approve / Reject / Modify            │
-└───────────────────────────────────────────────────────────┘
+┌────────────────────────────▼─────────────────────────────┐
+│              Streamlit Clinical Dashboard                 │
+│  Live agent feed | Analytics & Reporting | HITL reviews  │
+│  Drug safety alerts | Knowledge graph | FHIR R4 search   │
+└──────────────────────────────────────────────────────────┘
 ```
-
-### Agent Design Patterns Used
-
-| Agent | Framework | Pattern | Purpose |
-|-------|-----------|---------|---------|
-| Prior Auth Agent | LangGraph | ReAct (Reason+Act) | Iterative tool use: fetch patient → check policy → decide |
-| Care Gap Agent | LangGraph | Plan-and-Execute | Plan all gap checks upfront, execute sequentially |
-| Risk Triage Agent | LangGraph | Scoring loop | Multi-factor risk assessment with threshold routing |
-| Triage Supervisor | CrewAI | Multi-agent orchestration | Route, coordinate, and escalate across sub-agents |
 
 ---
 
-## Key Features
+## Customer Deployment Scenario: Mass General Brigham
 
-- **Multi-agent coordination** — CrewAI supervisor delegates to specialized LangGraph agents
-- **MCP tool architecture** — standardized tool interfaces for EHR and payer data access
-- **ReAct + Plan-and-Execute** — different reasoning patterns per workflow complexity
-- **Human-in-the-loop** — automatic escalation when agent confidence < configurable threshold
-- **Prefect orchestration** — scheduled batch runs with retry logic, failure alerts, and task dependencies
-- **LangSmith observability** — full trace capture: latency per node, token usage, tool call sequences
-- **FastAPI service layer** — REST endpoints for triggering workflows and consuming results
-- **Streamlit review dashboard** — clinicians approve, reject, or modify escalated decisions
+Mass General Brigham (MGB) is a top Innovaccer target account — an academic medical system with Epic EHR, active AI initiatives, and documented prior auth burden affecting thousands of patients.
+
+**How this system would be deployed on-site:**
+
+### Week 1–2: Data Integration
+```python
+# Connect to MGB's Epic FHIR R4 endpoint
+FHIR_BASE_URL = "https://epicfhir.massgeneralbrigham.org/api/FHIR/R4"
+USE_FHIR = true  # flip in .env — all agents switch to live data
+```
+- SMART on FHIR OAuth2 authentication layer (2-week build)
+- Map MGB's insurance plans to payer_policies.json
+- Load MGB-specific clinical protocols into RAG guideline store
+
+### Week 3–4: Pilot with 50 patients
+- Run prior auth automation on backlog (target: 80%+ auto-approval rate)
+- Deploy care gap identification across diabetic patient cohort
+- Validate against MGB clinician decisions (ground truth)
+- Generate accuracy report: precision, recall, escalation rate
+
+### Week 5–6: Production handover
+- Connect audit_log to MGB's Snowflake data warehouse via dbt
+- Train care coordinators on HITL review dashboard
+- Set up Prefect scheduled runs (nightly batch + real-time triggers)
+- Deliver HEDIS-reportable care gap metrics to quality team
+
+**Expected outcomes (based on Innovaccer Flow Auth benchmarks):**
+- 50% reduction in physician time on prior authorization
+- 2x staff productivity on care gap outreach
+- Up to 5x ROI through reduced denials and faster approvals
+
+---
+
+## Research Foundation
+
+This system implements patterns from 5 peer-reviewed papers:
+
+| Paper | Venue | Pattern Implemented |
+|---|---|---|
+| MDAgents | NeurIPS 2024 (Oral) | Adaptive complexity routing: LOW/MODERATE/HIGH → different agent teams |
+| TxAgent | arXiv 2025.3, Harvard | OpenFDA real-time drug safety with multi-step tool reasoning |
+| MALADE | MLHC 2024 | Agent/Critic pattern for prior auth — critic reviews each decision |
+| FHIR-AgentBench | arXiv 2025.9 | FHIR R4 resource queries with LOINC/SNOMED coding |
+| KG4Diagnosis | arXiv 2024.12 | Clinical knowledge graph with 93 nodes, 67 evidence-based edges |
+
+---
+
+## Tech Stack
+
+| Layer | Technology | JD Mapping |
+|---|---|---|
+| Agent frameworks | LangGraph 0.2, CrewAI 0.80 | Agentic AI workflows |
+| LLM | GPT-4o-mini (OpenAI) | LLM-based coding + AI solutions |
+| Data warehouse | PostgreSQL / Snowflake-compatible | Snowflake, PostgreSQL |
+| ETL / data modeling | dbt schema + SQL marts | dbt, data quality frameworks |
+| Orchestration | Prefect 3.x | AI orchestration tools |
+| Observability | LangSmith | Evaluation, tracing |
+| Real-time data | OpenFDA API, FHIR R4 | APIs, data integration patterns |
+| RAG | ChromaDB + sentence-transformers | Knowledge retrieval |
+| API | FastAPI | REST APIs, microservices |
+| Dashboard | Streamlit | BI / visualization tools |
+| Language | Python 3.11+ | Python proficiency |
+
+---
+
+## Running the System
+
+```bash
+# 1. Install
+pip install -r requirements.txt
+
+# 2. Configure
+cp .env.example .env  # add OPENAI_API_KEY
+
+# 3. Initialize DB
+python -c "from api.main import init_db; init_db()"
+
+# 4. Load clinical guidelines RAG (first time, ~5 min)
+python rag/refresh_flow.py
+
+# 5. Start API
+uvicorn api.main:app --reload --port 8000
+
+# 6. Start dashboard
+streamlit run frontend/app.py
+
+# 7. Run Prefect batch
+python orchestration/prefect_flow.py
+
+# 8. Data quality check
+python analytics/data_quality.py
+```
 
 ---
 
@@ -89,230 +187,53 @@ This system automates all three workflows using specialized AI agents that reaso
 
 ```
 healthcare-ai-agents/
-├── README.md
-├── requirements.txt
-├── .env.example
-│
 ├── agents/
-│   ├── __init__.py
-│   ├── prior_auth_agent.py       # LangGraph ReAct agent for prior auth
-│   ├── care_gap_agent.py         # LangGraph Plan-and-Execute for care gaps
-│   └── triage_supervisor.py      # CrewAI multi-agent supervisor
-│
+│   ├── complexity_router.py      # MDAgents adaptive routing
+│   ├── prior_auth_agent.py       # LangGraph ReAct + Agent/Critic (MALADE)
+│   ├── care_gap_agent.py         # LangGraph Plan-and-Execute + RAG
+│   ├── drug_safety_agent.py      # OpenFDA real-time + LangGraph (TxAgent)
+│   └── triage_supervisor.py      # CrewAI MDT/ICT orchestration
 ├── tools/
-│   ├── __init__.py
-│   ├── ehr_tools.py              # MCP-style EHR data tools
-│   ├── payer_tools.py            # Payer policy & coverage tools
-│   └── risk_tools.py             # Risk scoring & comorbidity tools
-│
-├── orchestration/
-│   ├── __init__.py
-│   └── prefect_flow.py           # Prefect scheduled workflow
-│
+│   ├── ehr_tools.py              # FHIR R4 dual-mode client (6 tools)
+│   ├── payer_tools.py            # Payer policy tools (2 tools)
+│   └── risk_tools.py             # Risk scoring tools (2 tools)
+├── rag/
+│   ├── guideline_sources.py      # 63 sources: USPSTF, ADA, AHA, KDIGO, NCI...
+│   ├── scraper.py                # Hash-based change detection scraper
+│   ├── embedder.py               # ChromaDB + normalized cosine embeddings
+│   ├── retriever.py              # Cross-encoder reranker + query expansion
+│   └── refresh_flow.py           # Prefect weekly refresh flow
+├── knowledge_graph/
+│   └── clinical_graph.py         # 93 nodes, 67 edges, SNOMED/LOINC coded
+├── analytics/
+│   ├── queries.py                # SQL analytics: cohorts, SLA, auth metrics
+│   └── data_quality.py           # Data quality framework: 10 validation rules
+├── dbt/
+│   └── models/
+│       ├── schema.yml            # dbt column tests and source definitions
+│       └── marts/
+│           └── patient_care_gaps.sql  # HEDIS-reportable care gap mart
 ├── api/
-│   ├── __init__.py
-│   └── main.py                   # FastAPI endpoints
-│
+│   └── main.py                   # FastAPI: 8 endpoints + guidelines API
 ├── frontend/
-│   └── app.py                    # Streamlit HITL dashboard
-│
+│   └── app.py                    # Streamlit: 8-tab dashboard
+├── orchestration/
+│   └── prefect_flow.py           # Prefect batch workflow with retries
 ├── data/
-│   ├── synthetic_patients.json   # Sample patient data (HIPAA-safe synthetic)
-│   └── payer_policies.json       # Sample payer coverage rules
-│
+│   ├── synthetic_patients.json   # 20 clinically diverse patients
+│   └── payer_policies.json       # BlueCross, Aetna, United Health policies
 └── tests/
-    ├── test_prior_auth.py
+    ├── test_prior_auth.py         # 20+ unit tests
     ├── test_care_gap.py
     └── test_triage.py
 ```
 
 ---
 
-## Setup
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/harshinireddy2204/healthcare-ai-agents.git
-cd healthcare-ai-agents
-```
-
-### 2. Create a virtual environment
-
-```bash
-python -m venv venv
-source venv/bin/activate        # macOS/Linux
-# venv\Scripts\activate         # Windows
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-```bash
-cp .env.example .env
-# Edit .env and fill in your API keys
-```
-
-Required keys:
-
-| Variable | Where to get it |
-|----------|-----------------|
-| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com) |
-| `LANGCHAIN_API_KEY` | [smith.langchain.com](https://smith.langchain.com) |
-| `LANGCHAIN_PROJECT` | Set any name, e.g. `healthcare-ai-agents` |
-
-### 5. Initialize the database
-
-```bash
-python -c "from api.main import init_db; init_db()"
-```
-
----
-
-## Running the System
-
-### Start the FastAPI server
-
-```bash
-uvicorn api.main:app --reload --port 8000
-```
-
-API docs available at: `http://localhost:8000/docs`
-
-### Run a single patient through the pipeline
-
-```bash
-curl -X POST http://localhost:8000/process-patient \
-  -H "Content-Type: application/json" \
-  -d '{"patient_id": "P001"}'
-```
-
-### Start the Prefect scheduled workflow
-
-```bash
-python orchestration/prefect_flow.py
-```
-
-### Launch the HITL review dashboard
-
-```bash
-streamlit run frontend/app.py
-```
-
-Dashboard available at: `http://localhost:8501`
-
----
-
-## API Reference
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/process-patient` | Trigger full agent workflow for a patient |
-| `GET` | `/pending-reviews` | List all cases awaiting human review |
-| `POST` | `/resolve-review/{id}` | Approve, reject, or modify an escalated case |
-| `GET` | `/audit-log` | Full decision audit trail |
-| `GET` | `/health` | Service health check |
-
----
-
-## Agent Workflow Detail
-
-### Prior Authorization Agent (ReAct Loop)
-
-```
-User request → [Reason] What patient data do I need?
-             → [Act]    get_patient_demographics(P001)
-             → [Observe] Patient: 67F, Dx: Type 2 Diabetes
-             → [Reason] What does the payer policy say?
-             → [Act]    get_payer_policy("insulin_pump", "BlueCross")
-             → [Observe] Covered if HbA1c > 9.0 and tried ≥2 oral meds
-             → [Reason] Does this patient qualify?
-             → [Act]    get_lab_results(P001, "HbA1c")
-             → [Observe] HbA1c = 10.2 — qualifies
-             → [Final]  APPROVE — generate auth justification
-```
-
-### Care Gap Agent (Plan-and-Execute)
-
-```
-[Plan]  1. Check mammogram (due if female > 40, last > 12mo)
-        2. Check HbA1c (due if diabetic, last > 3mo)
-        3. Check flu vaccine (due annually)
-        4. Check nephrology referral (due if eGFR < 60)
-
-[Execute step 1] get_screening_history(P001, "mammogram") → last: 18mo ago → GAP
-[Execute step 2] get_lab_results(P001, "HbA1c") → last: 2mo ago → OK
-[Execute step 3] get_immunization_history(P001, "flu") → current → OK
-[Execute step 4] get_lab_results(P001, "eGFR") → 45 → GAP → schedule_referral()
-
-[Output] 2 care gaps identified. Outreach scheduled.
-```
-
-### Confidence-Based HITL Escalation
-
-```python
-if supervisor_confidence < CONFIDENCE_THRESHOLD:  # default 0.75
-    write_to_review_queue(case)    # → SQLite
-    notify_clinician(case)         # → dashboard alert
-    return "PENDING_HUMAN_REVIEW"
-```
-
----
-
-## Observability
-
-This project uses **LangSmith** for full agent tracing. Every agent run captures:
-- Token usage per node
-- Latency per tool call
-- Full reasoning chain
-- Tool inputs and outputs
-- Final decision with confidence score
-
-Set `LANGCHAIN_TRACING_V2=true` in your `.env` to enable.
-
-View traces at: [smith.langchain.com](https://smith.langchain.com)
-
----
-
-## Synthetic Data
-
-All patient data in `data/synthetic_patients.json` is fully synthetic and HIPAA-safe. It was generated to reflect realistic clinical distributions without containing any real patient information.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| LLM backbone | GPT-4o via OpenAI API |
-| Agent framework | LangGraph 0.2 + CrewAI 0.80 |
-| Tool protocol | MCP-style structured tools |
-| Orchestration | Prefect 3.x |
-| Observability | LangSmith |
-| API | FastAPI + Uvicorn |
-| HITL dashboard | Streamlit |
-| Storage | SQLite (dev) / PostgreSQL (prod) |
-| Language | Python 3.11+ |
-
----
-
-## Roadmap
-
-- [ ] Add RAG layer over clinical guidelines (USPSTF, CMS)
-- [ ] Replace synthetic EHR with FHIR R4 API integration
-- [ ] Add AutoGen debate pattern for high-stakes auth decisions
-- [ ] Export Prefect run reports to PDF
-- [ ] Add evaluation harness with LangSmith datasets
-
----
-
 ## Author
 
-**Harshini Reddy**  
-Business & Data Analyst | AI Engineer  
+**Harshini Reddy**
+Business & Data Analyst | Applied AI & Analytics
 [LinkedIn](https://www.linkedin.com/in/harshini-reddy22/) · [GitHub](https://github.com/harshinireddy2204)
+
+> *Available for Applied AI & Analytics Consultant roles. This project demonstrates end-to-end delivery of AI-driven healthcare solutions — from FHIR R4 data integration through multi-agent orchestration to clinical analytics dashboards — the exact scope of work Innovaccer consultants deliver on-site at health system customers.*
