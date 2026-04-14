@@ -1,7 +1,7 @@
 # AI-Powered Clinical Operations — Solution Brief for Mass General Brigham
 
 **Prepared by:** Harshini Reddy, Applied AI & Analytics Consultant
-**Platform basis:** Innovaccer Gravity™ + custom multi-agent layer
+**Platform basis:** Custom multi-agent layer on FHIR R4 + Snowflake
 
 ---
 
@@ -63,7 +63,7 @@ Results flow into MGB's Snowflake via standard dbt ETL.
 
 ---
 
-## Expected Outcomes (Innovaccer Flow Auth benchmarks)
+## Expected Outcomes (prior auth automation benchmarks)
 
 | Metric | Projected Impact |
 |---|---|
@@ -83,4 +83,4 @@ Results flow into MGB's Snowflake via standard dbt ETL.
 | 5 | Accuracy validation against clinician ground truth |
 | 6 | Production: Snowflake pipeline, HEDIS dashboard, staff training |
 
-*Built on Innovaccer Gravity™ architecture — FHIR R4, HIPAA-structured, Snowflake-compatible.*
+*FHIR R4, HIPAA-structured, Snowflake-compatible.*

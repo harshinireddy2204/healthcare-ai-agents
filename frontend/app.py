@@ -343,7 +343,7 @@ elif page == "⚡ Run Agent Workflow":
     with tab_fhir:
         st.markdown(
             "**Live FHIR R4 data** from `hapi.fhir.org/baseR4` — "
-            "Innovaccer's Gravity platform uses this exact standard."
+            "the industry-standard healthcare data interchange format."
         )
 
         fhir_server = st.text_input(
@@ -486,7 +486,7 @@ elif page == "⚡ Run Agent Workflow":
 | `Immunization` | CVX codes | Vaccine history |
 | `ServiceRequest` | SNOMED | Prior auth requests |
 """)
-        st.caption("Innovaccer's Gravity platform is built on FHIR R4 — this is their exact data standard.")
+        st.caption("FHIR R4 is the industry-standard healthcare data interchange format used by Epic, Cerner, and major EHR vendors.")
 
 
 # ── Page: Pending Reviews ─────────────────────────────────────────────────────

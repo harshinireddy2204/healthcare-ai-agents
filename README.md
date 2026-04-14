@@ -1,5 +1,5 @@
 # Healthcare AI Multi-Agent System
-### Built on the same architecture as Innovaccer Gravity™
+### Production-Grade Multi-Agent Clinical Operations Platform
 
 > A production-grade, multi-agent clinical operations platform that automates prior authorization, care gap detection, and patient risk triage — independently built to demonstrate readiness for customer-facing AI consulting delivery at health systems like Mass General Brigham.
 
@@ -32,16 +32,16 @@ This project is a working proof-of-concept of what an Applied AI & Analytics Con
 
 ---
 
-## How It Maps to Innovaccer's Product Stack
+## Clinical Workflows Automated
 
-Innovaccer's Gravity™ platform (launched May 2025) delivers the exact use cases this system automates:
+This system automates the three highest-burden clinical operations workflows:
 
-| Innovaccer Product | This System's Equivalent | Key Difference |
+| Workflow | Implementation | Key Feature |
 |---|---|---|
-| **Flow Auth** (prior auth automation) | `agents/prior_auth_agent.py` — LangGraph ReAct + Agent/Critic | Added Agent/Critic review pattern (MALADE, MLHC 2024) for higher accuracy |
-| **Gravity Agentic AI** (care management) | `agents/care_gap_agent.py` — Plan-and-Execute with RAG citations | RAG over 63 clinical guidelines with cross-encoder reranking |
-| **Galaxy** (HEDIS/quality analytics) | `analytics/queries.py` + `dbt/models/` | dbt mart produces HEDIS-reportable care gap metrics |
-| **Gravity Data Fabric** (FHIR ingestion) | `tools/ehr_tools.py` — FHIR R4 dual-mode client | Supports synthetic + live HAPI FHIR server queries |
+| **Prior auth automation** | `agents/prior_auth_agent.py` — LangGraph ReAct + Agent/Critic | Agent/Critic review pattern (MALADE, MLHC 2024) for higher accuracy |
+| **Care gap management** | `agents/care_gap_agent.py` — Plan-and-Execute with RAG citations | RAG over 63 clinical guidelines with cross-encoder reranking |
+| **HEDIS/quality analytics** | `analytics/queries.py` + `dbt/models/` | dbt mart produces HEDIS-reportable care gap metrics |
+| **FHIR R4 data ingestion** | `tools/ehr_tools.py` — FHIR R4 dual-mode client | Supports synthetic + live HAPI FHIR server queries |
 | **Snowflake integration** | PostgreSQL-compatible, Snowflake-ready SQL | All queries use standard SQL, no SQLite-specific syntax |
 
 ---
@@ -88,7 +88,7 @@ Innovaccer's Gravity™ platform (launched May 2025) delivers the exact use case
 
 ## Customer Deployment Scenario: Mass General Brigham
 
-Mass General Brigham (MGB) is a top Innovaccer target account — an academic medical system with Epic EHR, active AI initiatives, and documented prior auth burden affecting thousands of patients.
+Mass General Brigham (MGB) is an academic medical system with Epic EHR, active AI initiatives, and documented prior auth burden affecting thousands of patients.
 
 **How this system would be deployed on-site:**
 
@@ -114,7 +114,7 @@ USE_FHIR = true  # flip in .env — all agents switch to live data
 - Set up Prefect scheduled runs (nightly batch + real-time triggers)
 - Deliver HEDIS-reportable care gap metrics to quality team
 
-**Expected outcomes (based on Innovaccer Flow Auth benchmarks):**
+**Expected outcomes (based on published prior auth automation benchmarks):**
 - 50% reduction in physician time on prior authorization
 - 2x staff productivity on care gap outreach
 - Up to 5x ROI through reduced denials and faster approvals
@@ -236,4 +236,4 @@ healthcare-ai-agents/
 Business & Data Analyst | Applied AI & Analytics
 [LinkedIn](https://www.linkedin.com/in/harshini-reddy22/) · [GitHub](https://github.com/harshinireddy2204)
 
-> *Available for Applied AI & Analytics Consultant roles. This project demonstrates end-to-end delivery of AI-driven healthcare solutions — from FHIR R4 data integration through multi-agent orchestration to clinical analytics dashboards — the exact scope of work Innovaccer consultants deliver on-site at health system customers.*
+> *Available for Applied AI & Analytics Consultant roles. This project demonstrates end-to-end delivery of AI-driven healthcare solutions — from FHIR R4 data integration through multi-agent orchestration to clinical analytics dashboards — the exact scope of work AI consultants deliver on-site at health system customers.*

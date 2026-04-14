@@ -12,7 +12,7 @@ FHIR R4 Integration:
   - Server: https://hapi.fhir.org/baseR4 (public, no auth required)
   - Resources used: Patient, Condition, Observation, MedicationRequest,
                     AllergyIntolerance, Immunization, ServiceRequest
-  - Innovaccer's Gravity platform uses FHIR R4 — this is their exact data standard
+  - FHIR R4 is the industry-standard healthcare data interchange format
 
 In production, swap FHIR_BASE_URL for the customer's FHIR endpoint and add
 OAuth2 SMART-on-FHIR authentication via the FHIR_CLIENT_ID / FHIR_CLIENT_SECRET
