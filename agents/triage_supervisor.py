@@ -79,17 +79,32 @@ class DrugSafetyTool(BaseTool):
     name: str = "drug_safety_agent"
     description: str = (
         "Run real-time OpenFDA drug safety check for a patient. "
-        "Input: JSON with patient_id, medications (list), diagnoses (list)."
+        "Input: JSON with patient_id. Optionally include medications (list) and diagnoses (list) "
+        "— if omitted, they are fetched automatically from patient records."
     )
 
     def _run(self, input_str: str) -> str:
         try:
             data = json.loads(input_str)
+            patient_id = data["patient_id"]
+
+            # Auto-fetch medications and diagnoses if not provided
+            medications = data.get("medications", [])
+            diagnoses = data.get("diagnoses", [])
+
+            if not medications or not diagnoses:
+                from tools.ehr_tools import get_patient_demographics
+                demo = get_patient_demographics.invoke({"patient_id": patient_id})
+                if not medications:
+                    medications = demo.get("medications", [])
+                if not diagnoses:
+                    diagnoses = demo.get("diagnoses", [])
+
             from agents.drug_safety_agent import run_drug_safety_check
             result = run_drug_safety_check(
-                patient_id=data["patient_id"],
-                medications=data.get("medications", []),
-                diagnoses=data.get("diagnoses", [])
+                patient_id=patient_id,
+                medications=medications,
+                diagnoses=diagnoses
             )
             return json.dumps({
                 "patient_id": result["patient_id"],
@@ -256,6 +271,7 @@ def _run_moderate_complexity(patient_id: str) -> dict:
 
 def _run_high_complexity(patient_id: str) -> dict:
     """HIGH pathway: full ICT with drug safety + knowledge graph specialists."""
+    import time
     print(f"[Supervisor] HIGH pathway: Full ICT for {patient_id}")
     model = os.getenv("MODEL_NAME", "gpt-4o-mini")
 
@@ -315,6 +331,8 @@ def _run_high_complexity(patient_id: str) -> dict:
         process=Process.sequential,
         verbose=False
     )
+    # Brief pause before kicking off 4-agent team to avoid TPM saturation
+    time.sleep(5)
     result = crew.kickoff()
     return {"pathway": "HIGH", "workflow": "crewai_ict_full", "crew_output": str(result)}
 

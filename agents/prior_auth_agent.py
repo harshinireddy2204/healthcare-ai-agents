@@ -110,10 +110,17 @@ Check for:
 4. Were any critical lab values or diagnoses overlooked?
 5. Is the decision consistent with standard clinical practice?
 
-If the reasoning is sound, respond: CRITIQUE: APPROVED — reasoning is sound.
-If there are gaps, respond:
-CRITIQUE: REVISE — [specific issues found]
-REQUIRED_CHECKS: [list what the agent should check]
+IMPORTANT: If criteria evaluation returned "manual_review_required", this means
+the data is genuinely not available for automated evaluation. This is ACCEPTABLE —
+do NOT request a revision just because some criteria need manual review.
+Only request revision if the agent SKIPPED criteria it could have evaluated.
+
+If the reasoning is sound (even if some criteria require manual review):
+  CRITIQUE: APPROVED — reasoning is sound.
+
+If the agent skipped evaluable criteria or made a logical error:
+  CRITIQUE: REVISE — [specific issue]
+  REQUIRED_CHECKS: [what to check]
 """
 
 REVISION_SYSTEM = """You are revising your prior authorization decision based on

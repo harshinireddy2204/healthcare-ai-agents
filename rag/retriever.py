@@ -56,6 +56,9 @@ _client = None
 _collection = None
 _embedder = None
 _reranker = None
+import threading
+_model_lock = threading.Lock()
+
 
 # ── Clinical synonym expansion map ────────────────────────────────────────────
 # Adds known medical synonyms to the query before embedding.
@@ -167,7 +170,9 @@ def _get_embedder() -> SentenceTransformer:
 def _get_reranker() -> CrossEncoder:
     global _reranker
     if _reranker is None:
-        _reranker = CrossEncoder(RERANK_MODEL)
+        with _model_lock:
+            if _reranker is None:  # double-check after acquiring lock
+                _reranker = CrossEncoder(RERANK_MODEL)
     return _reranker
 
 

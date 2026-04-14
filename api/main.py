@@ -105,14 +105,48 @@ def write_audit(patient_id: str, status: str, result: dict):
         print(f"[Audit] Failed to write log for {patient_id}: {e}")
 
 
+# ── In-flight dedup guard ─────────────────────────────────────────────────────
+# Prevents double-run if user clicks twice or two requests arrive simultaneously
+_in_flight: set = set()
+
+
 # ── Background task ───────────────────────────────────────────────────────────
 
 def run_triage_background(patient_id: str, mode: str):
     """
-    Run agent workflow in background. Logs both success and failure
-    to the audit_log table so the result is always visible.
+    Run agent workflow in background with:
+    - Deduplication guard (skip if same patient+mode already running)
+    - Automatic retry with exponential backoff on rate limit errors
+    - Full audit logging of success and failure
     """
+    run_key = f"{patient_id}:{mode}"
+
+    # ── Dedup: skip if already running ────────────────────────────────────────
+    if run_key in _in_flight:
+        print(f"[Background] Skipping duplicate run for {run_key}")
+        return
+    _in_flight.add(run_key)
+
     print(f"\n[Background] Starting {mode} workflow for {patient_id}")
+
+    def _with_retry(fn, *args, max_retries=3, base_delay=15):
+        """
+        Run fn with exponential backoff retry on 429 rate limit errors.
+        base_delay=15s gives the token bucket time to refill.
+        """
+        import time
+        for attempt in range(max_retries):
+            try:
+                return fn(*args)
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "rate_limit" in err_str.lower():
+                    wait = base_delay * (2 ** attempt)
+                    print(f"[Background] Rate limit hit — waiting {wait}s before retry {attempt+1}/{max_retries}")
+                    time.sleep(wait)
+                else:
+                    raise  # non-rate-limit error, don't retry
+        raise RuntimeError(f"Max retries exceeded for {patient_id}")
 
     try:
         if mode == "auth_only":
@@ -123,20 +157,17 @@ def run_triage_background(patient_id: str, mode: str):
             results = []
             for req in (requests or []):
                 if isinstance(req, dict) and "request_id" in req:
-                    r = run_prior_auth(patient_id, req["request_id"], req["item"])
+                    r = _with_retry(run_prior_auth, patient_id, req["request_id"], req["item"])
                     results.append(r)
-                    print(f"[Background] Auth result: {r}")
+                    print(f"[Background] Auth result: {r.get('decision')} ({r.get('confidence', 0):.0%})")
 
-            write_audit(patient_id, "COMPLETED", {
-                "mode": mode,
-                "auth_results": results
-            })
+            write_audit(patient_id, "COMPLETED", {"mode": mode, "auth_results": results})
 
         elif mode == "care_gap_only":
             from agents.care_gap_agent import run_care_gap_review
 
             print(f"[Background] Running care gap review for {patient_id}...")
-            result = run_care_gap_review(patient_id)
+            result = _with_retry(run_care_gap_review, patient_id)
             print(f"[Background] Care gap complete: {result['steps_executed']} steps")
 
             write_audit(patient_id, "COMPLETED", {
@@ -148,7 +179,7 @@ def run_triage_background(patient_id: str, mode: str):
         else:  # full
             from agents.triage_supervisor import run_triage
 
-            result = run_triage(patient_id)
+            result = _with_retry(run_triage, patient_id)
             status = result.get("status", "COMPLETED")
             write_audit(patient_id, status, result)
 
@@ -159,6 +190,9 @@ def run_triage_background(patient_id: str, mode: str):
         import traceback
         traceback.print_exc()
         write_audit(patient_id, "FAILED", {"error": str(e), "mode": mode})
+
+    finally:
+        _in_flight.discard(run_key)
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
