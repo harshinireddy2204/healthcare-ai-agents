@@ -1,18 +1,28 @@
 """
 agents/prior_auth_agent.py
 
-Prior Authorization Agent — LangGraph ReAct loop.
+Prior Authorization Agent — LangGraph ReAct loop with Agent/Critic pattern.
 
-RAG integration: the agent can now call search_clinical_guidelines()
-to retrieve coverage criteria from USPSTF, ADA, KDIGO, and ACC/AHA
-guidelines to support or challenge payer coverage decisions.
+MALADE (MLHC 2024) key insight: Agent/Critic pattern improves accuracy by
+having a dedicated critic agent review and challenge the primary agent's
+reasoning before it becomes final. In MALADE, critics improved AUC from
+0.82 to 0.85 on pharmacovigilance tasks.
+
+Our implementation:
+  1. Primary ReAct agent reasons over patient data + payer policy + guidelines
+  2. Critic agent reviews the decision for logical gaps and missing criteria
+  3. If critic finds issues, primary agent revises (max 1 revision cycle)
+  4. Final decision must survive critic review to avoid HITL escalation
+
+This directly addresses the REQ001 problem — ESCALATE with 0.6 confidence
+often happened because the agent hadn't checked all available evidence.
 """
 import os
 from typing import Annotated, TypedDict, Literal
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -21,6 +31,7 @@ from tools.ehr_tools import EHR_TOOLS
 from tools.payer_tools import PAYER_TOOLS
 
 load_dotenv()
+
 
 # ── State ──────────────────────────────────────────────────────────────────────
 
@@ -31,12 +42,13 @@ class AuthState(TypedDict):
     decision: str
     confidence: float
     justification: str
+    critic_feedback: str
+    revision_count: int
 
 
-# ── Tools (EHR + Payer + RAG Guidelines) ──────────────────────────────────────
+# ── Tool loading ──────────────────────────────────────────────────────────────
 
-def _get_all_tools_kg():
-    """Load EHR + Payer + RAG + Knowledge Graph tools."""
+def _get_all_tools():
     tools = EHR_TOOLS + PAYER_TOOLS
     try:
         from rag.retriever import GUIDELINE_TOOLS
@@ -46,127 +58,215 @@ def _get_all_tools_kg():
     try:
         from knowledge_graph.clinical_graph import KNOWLEDGE_GRAPH_TOOLS
         tools = tools + KNOWLEDGE_GRAPH_TOOLS
-        print("[PriorAuthAgent] Knowledge graph tools loaded ✓")
-    except Exception as e:
+    except Exception:
         pass
     return tools
-    tools = EHR_TOOLS + PAYER_TOOLS
-    try:
-        from rag.retriever import GUIDELINE_TOOLS
-        tools = tools + GUIDELINE_TOOLS
-        print("[PriorAuthAgent] RAG guideline tools loaded ✓")
-    except Exception as e:
-        print(f"[PriorAuthAgent] RAG tools not available: {e}")
-    return tools
 
-
-# ── Lazy LLM factory ──────────────────────────────────────────────────────────
 
 def get_llm():
     load_dotenv()
     model = os.getenv("MODEL_NAME", "gpt-4o-mini")
-    all_tools = _get_all_tools_kg()
+    all_tools = _get_all_tools()
     llm = ChatOpenAI(model=model, temperature=0).bind_tools(all_tools)
     tool_node = ToolNode(all_tools)
     return llm, tool_node
 
 
-# ── Prompt ────────────────────────────────────────────────────────────────────
+def get_bare_llm():
+    """LLM without tools — used for critic and parser nodes."""
+    load_dotenv()
+    return ChatOpenAI(model=os.getenv("MODEL_NAME", "gpt-4o-mini"), temperature=0)
 
-SYSTEM_PROMPT = """You are a clinical prior authorization specialist AI agent.
-Your job is to evaluate whether a prior authorization request should be approved,
-denied, or escalated to a human reviewer.
 
-For every request you must:
-1. Retrieve the patient's demographics and relevant lab results using EHR tools
-2. Look up the payer's coverage policy for the requested item
-3. Search clinical guidelines (search_clinical_guidelines) to verify the clinical
-   appropriateness of the requested item based on the patient's condition
-4. Check whether the patient meets the coverage criteria
-5. Make a final decision: APPROVE, DENY, or ESCALATE
+# ── Prompts ───────────────────────────────────────────────────────────────────
 
-ESCALATE when:
-- Criteria evaluation requires clinical judgment beyond the data
-- A criterion says "manual_review_required"
-- You are less than 75% confident in your determination
+PRIMARY_AGENT_SYSTEM = """You are a clinical prior authorization specialist.
+Evaluate whether an authorization request should be APPROVE, DENY, or ESCALATE.
 
-When guidelines support the auth request but the payer policy is unclear,
-cite the guideline in your justification (e.g. "ADA 2025 recommends insulin pump
-for HbA1c > 9% — patient qualifies").
+Steps:
+1. Get patient demographics and relevant labs (EHR tools)
+2. Get payer coverage policy for the item (payer tools)
+3. Search clinical guidelines for evidence (search_clinical_guidelines)
+4. Run knowledge graph analysis if complex case (analyze_clinical_connections)
+5. Evaluate each coverage criterion against patient data
+6. Make final determination
 
-Always end your response with:
+ESCALATE only when criteria genuinely cannot be evaluated from available data.
+
+End your response with:
 DECISION: [APPROVE|DENY|ESCALATE]
 CONFIDENCE: [0.0-1.0]
-JUSTIFICATION: [one sentence including guideline citation if applicable]
+JUSTIFICATION: [cite specific guideline or payer criteria]
+"""
+
+CRITIC_SYSTEM = """You are a senior clinical reviewer auditing a prior authorization decision.
+
+Your job is to find logical gaps, missing evidence, or errors in the primary agent's reasoning.
+
+Check for:
+1. Were all payer criteria evaluated? (not just some)
+2. Was the clinical guideline cited and relevant?
+3. Is the confidence score justified by the evidence?
+4. Were any critical lab values or diagnoses overlooked?
+5. Is the decision consistent with standard clinical practice?
+
+If the reasoning is sound, respond: CRITIQUE: APPROVED — reasoning is sound.
+If there are gaps, respond:
+CRITIQUE: REVISE — [specific issues found]
+REQUIRED_CHECKS: [list what the agent should check]
+"""
+
+REVISION_SYSTEM = """You are revising your prior authorization decision based on
+a senior reviewer's critique.
+
+Address each issue raised, gather any missing evidence, and provide a revised determination.
+
+End with:
+DECISION: [APPROVE|DENY|ESCALATE]
+CONFIDENCE: [0.0-1.0]
+JUSTIFICATION: [revised justification addressing critique]
+REVISED: true
 """
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 
-def call_agent(state: AuthState) -> dict:
+def primary_agent_node(state: AuthState) -> dict:
+    """Node: primary ReAct agent evaluates the auth request."""
     llm, _ = get_llm()
 
     messages = state["messages"]
     if not any(isinstance(m, SystemMessage) for m in messages):
-        messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+        messages = [SystemMessage(content=PRIMARY_AGENT_SYSTEM)] + messages
+
+    # Include any critic feedback from previous iteration
+    if state.get("critic_feedback") and state.get("revision_count", 0) > 0:
+        messages = messages + [HumanMessage(
+            content=f"Please revise your decision based on this critique:\n{state['critic_feedback']}"
+        )]
 
     response = llm.invoke(messages)
     return {"messages": [response]}
 
 
-def run_tools(state: AuthState) -> dict:
+def run_tools_node(state: AuthState) -> dict:
+    """Node: execute tool calls from the agent."""
     _, tool_node = get_llm()
     return tool_node.invoke(state)
 
 
-def parse_decision(state: AuthState) -> dict:
-    last_message = state["messages"][-1]
-    content = last_message.content if hasattr(last_message, "content") else ""
+def critic_node(state: AuthState) -> dict:
+    """
+    Node: MALADE-inspired critic agent reviews the primary agent's decision.
+    Returns critique feedback that may trigger a revision cycle.
+    """
+    critic_llm = get_bare_llm()
 
-    decision = "ESCALATE"
-    confidence = 0.5
-    justification = "Unable to parse agent output — escalating for safety."
+    # Find the last AIMessage with a decision
+    last_decision_msg = None
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, AIMessage) and "DECISION:" in getattr(msg, "content", ""):
+            last_decision_msg = msg
+            break
 
-    for line in content.split("\n"):
-        line = line.strip()
-        if line.startswith("DECISION:"):
-            val = line.replace("DECISION:", "").strip()
-            if val in ("APPROVE", "DENY", "ESCALATE"):
-                decision = val
-        elif line.startswith("CONFIDENCE:"):
-            try:
-                confidence = float(line.replace("CONFIDENCE:", "").strip())
-            except ValueError:
-                pass
-        elif line.startswith("JUSTIFICATION:"):
-            justification = line.replace("JUSTIFICATION:", "").strip()
+    if not last_decision_msg:
+        return {"critic_feedback": "CRITIQUE: APPROVED — no decision found to review"}
 
-    return {
-        "decision": decision,
-        "confidence": confidence,
-        "justification": justification
-    }
+    critique_response = critic_llm.invoke([
+        SystemMessage(content=CRITIC_SYSTEM),
+        HumanMessage(content=(
+            f"Review this prior authorization decision:\n\n"
+            f"Patient: {state['patient_id']}, Request: {state['request_id']}\n\n"
+            f"Agent reasoning:\n{last_decision_msg.content}"
+        ))
+    ])
+
+    feedback = critique_response.content
+    print(f"  [Critic] {feedback[:100]}...")
+    return {"critic_feedback": feedback}
 
 
-def should_continue(state: AuthState) -> Literal["run_tools", "parse_decision"]:
+def should_revise(state: AuthState) -> Literal["primary_agent", "parse_decision"]:
+    """Edge: route back to agent if critic found issues, else finalize."""
+    feedback = state.get("critic_feedback", "")
+    revision_count = state.get("revision_count", 0)
+
+    # Max 1 revision cycle to avoid infinite loops
+    if "CRITIQUE: REVISE" in feedback and revision_count < 1:
+        print(f"  [Critic] Requesting revision #{revision_count + 1}")
+        return "primary_agent"
+    return "parse_decision"
+
+
+def increment_revision(state: AuthState) -> dict:
+    """Node: increment revision counter before re-running primary agent."""
+    return {"revision_count": state.get("revision_count", 0) + 1}
+
+
+def should_continue_tools(state: AuthState) -> Literal["run_tools", "critic"]:
+    """Edge: run tools if pending, else send to critic."""
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "run_tools"
-    return "parse_decision"
+    return "critic"
+
+
+def parse_decision_node(state: AuthState) -> dict:
+    """Node: extract final structured decision from agent messages."""
+    # Find last message with decision
+    for msg in reversed(state["messages"]):
+        content = getattr(msg, "content", "")
+        if "DECISION:" in content:
+            decision = "ESCALATE"
+            confidence = 0.5
+            justification = "Unable to parse — escalating for safety"
+
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.startswith("DECISION:"):
+                    val = line.replace("DECISION:", "").strip()
+                    if val in ("APPROVE", "DENY", "ESCALATE"):
+                        decision = val
+                elif line.startswith("CONFIDENCE:"):
+                    try:
+                        confidence = float(line.replace("CONFIDENCE:", "").strip())
+                    except ValueError:
+                        pass
+                elif line.startswith("JUSTIFICATION:"):
+                    justification = line.replace("JUSTIFICATION:", "").strip()
+
+            return {
+                "decision": decision,
+                "confidence": confidence,
+                "justification": justification
+            }
+
+    return {
+        "decision": "ESCALATE",
+        "confidence": 0.3,
+        "justification": "No structured decision found — escalating for safety"
+    }
 
 
 # ── Graph assembly ─────────────────────────────────────────────────────────────
 
-def build_prior_auth_graph() -> StateGraph:
+def build_prior_auth_graph():
     graph = StateGraph(AuthState)
 
-    graph.add_node("agent", call_agent)
-    graph.add_node("run_tools", run_tools)
-    graph.add_node("parse_decision", parse_decision)
+    graph.add_node("primary_agent", primary_agent_node)
+    graph.add_node("run_tools", run_tools_node)
+    graph.add_node("critic", critic_node)
+    graph.add_node("increment_revision", increment_revision)
+    graph.add_node("parse_decision", parse_decision_node)
 
-    graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", should_continue)
-    graph.add_edge("run_tools", "agent")
+    graph.add_edge(START, "primary_agent")
+    graph.add_conditional_edges("primary_agent", should_continue_tools)
+    graph.add_edge("run_tools", "primary_agent")
+    graph.add_conditional_edges("critic", should_revise, {
+        "primary_agent": "increment_revision",
+        "parse_decision": "parse_decision"
+    })
+    graph.add_edge("increment_revision", "primary_agent")
     graph.add_edge("parse_decision", END)
 
     return graph.compile()
@@ -176,26 +276,24 @@ prior_auth_graph = build_prior_auth_graph()
 
 
 def run_prior_auth(patient_id: str, request_id: str, item_name: str) -> dict:
-    initial_message = HumanMessage(
-        content=(
-            f"Please evaluate prior authorization request {request_id} "
-            f"for patient {patient_id}. "
-            f"The requested item is: {item_name}. "
-            f"Use EHR tools to check patient data, payer tools to check coverage policy, "
-            f"and search_clinical_guidelines to find supporting clinical evidence. "
-            f"Then make a determination."
-        )
-    )
-
+    """Run the prior auth agent with Agent/Critic review pattern."""
     result = prior_auth_graph.invoke({
-        "messages": [initial_message],
+        "messages": [HumanMessage(content=(
+            f"Evaluate prior authorization request {request_id} for patient {patient_id}. "
+            f"Requested item: {item_name}. "
+            f"Use EHR tools, payer policy tools, clinical guidelines, and knowledge graph "
+            f"to make a determination."
+        ))],
         "patient_id": patient_id,
         "request_id": request_id,
         "decision": "PENDING",
         "confidence": 0.0,
-        "justification": ""
+        "justification": "",
+        "critic_feedback": "",
+        "revision_count": 0
     })
 
+    was_revised = result.get("revision_count", 0) > 0
     return {
         "patient_id": patient_id,
         "request_id": request_id,
@@ -203,11 +301,16 @@ def run_prior_auth(patient_id: str, request_id: str, item_name: str) -> dict:
         "decision": result["decision"],
         "confidence": result["confidence"],
         "justification": result["justification"],
+        "critic_reviewed": True,
+        "was_revised": was_revised,
+        "critic_feedback": result.get("critic_feedback", "")
     }
 
 
 if __name__ == "__main__":
     result = run_prior_auth("P001", "REQ001", "insulin_pump")
-    print("\n=== Prior Auth Result ===")
+    print("\n=== Prior Auth Result (with Critic) ===")
     for k, v in result.items():
-        print(f"  {k}: {v}")
+        if k != "critic_feedback":
+            print(f"  {k}: {v}")
+    print(f"  Critic: {result.get('critic_feedback', '')[:150]}")

@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: audit_log
+    description: >
+      Immutable record of all AI agent decisions. One row per patient workflow run.
+      Supports compliance reporting, accuracy measurement, and agent performance analysis.
+    columns:
+      - name: id
+        description: Auto-incrementing primary key
+        tests:
+          - unique
+          - not_null
+      - name: patient_id
+        description: Patient identifier (P001-P020 for synthetic, FHIR ID for real)
+        tests:
+          - not_null
+      - name: processed_at
+        description: UTC timestamp when the agent completed processing
+        tests:
+          - not_null
+      - name: status
+        description: COMPLETED | PENDING_REVIEW | FAILED
+        tests:
+          - accepted_values:
+              values: ['COMPLETED', 'PENDING_REVIEW', 'FAILED']
+      - name: result_json
+        description: Full agent output including decisions, care gaps, drug safety findings
+
+  - name: review_queue
+    description: >
+      Human-in-the-loop review queue. Cases escalated by AI agents when confidence
+      is below threshold or clinical judgment is required.
+    columns:
+      - name: id
+        description: Auto-incrementing primary key
+        tests:
+          - unique
+          - not_null
+      - name: patient_id
+        tests:
+          - not_null
+      - name: status
+        description: PENDING | RESOLVED
+        tests:
+          - accepted_values:
+              values: ['PENDING', 'RESOLVED']
+      - name: resolution
+        description: APPROVED | REJECTED | MODIFIED (null if still pending)
+
+sources:
+  - name: fhir_r4
+    description: Live FHIR R4 EHR data from hospital Epic/Cerner systems
+    tables:
+      - name: patient
+        description: FHIR R4 Patient resources
+      - name: condition
+        description: FHIR R4 Condition resources (SNOMED CT coded)
+      - name: observation
+        description: FHIR R4 Observation resources (LOINC coded lab results)
+      - name: medication_request
+        description: FHIR R4 MedicationRequest resources (RxNorm coded)
+
+  - name: openfda
+    description: FDA drug label and adverse event data via OpenFDA API
+    tables:
+      - name: drug_labels
+        description: FDA structured product labeling — interactions, contraindications, warnings
+      - name: adverse_events
+        description: FAERS adverse event reports — real-world drug safety signals
