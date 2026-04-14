@@ -68,37 +68,44 @@ def _get_all_tools_orig():
     return tools
 
 
-# ── Lazy LLM factory ──────────────────────────────────────────────────────────
+# ── LLM singleton cache (avoids rebuilding on every graph node call) ──────────
+
+_llm_cache: tuple | None = None
+
+MAX_PLAN_STEPS = 7  # cap to prevent TPM exhaustion on complex patients
 
 def get_llms():
+    global _llm_cache
+    if _llm_cache is not None:
+        return _llm_cache
     load_dotenv()
     model = os.getenv("MODEL_NAME", "gpt-4o-mini")
     all_tools = _get_all_tools_with_kg()
     planner = ChatOpenAI(model=model, temperature=0)
     executor = ChatOpenAI(model=model, temperature=0).bind_tools(all_tools)
     tools = ToolNode(all_tools)
-    return planner, executor, tools
+    _llm_cache = (planner, executor, tools)
+    return _llm_cache
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-PLANNER_SYSTEM = """You are a clinical care gap specialist. Your job is to plan
+PLANNER_SYSTEM = f"""You are a clinical care gap specialist. Your job is to plan
 a systematic review of a patient's preventive care needs.
 
-Given a patient ID, generate a numbered list of specific data checks to perform.
-Each check should be a single concrete action. Always include a step to search
-clinical guidelines for evidence-based citations.
+Given a patient ID, generate a numbered list of EXACTLY 5-7 specific data checks.
+Each check should be a single concrete action. Consolidate where possible
+(e.g. check all screenings in one step, search guidelines for all gaps in one step).
+Always include a step to search clinical guidelines for evidence-based citations.
 
-Example plan:
+Example plan (5 steps):
   1. Get patient demographics (age, gender, diagnoses)
-  2. Check mammogram screening history
-  3. Search clinical guidelines for mammogram recommendations (if female 40+)
-  4. Check colonoscopy history
-  5. Check flu vaccine history
-  6. Calculate risk score
-  7. Search clinical guidelines for any identified care gaps
+  2. Check screening history (colonoscopy, flu vaccine, mammogram if applicable)
+  3. Calculate risk score using diagnoses and labs
+  4. Search clinical guidelines for any identified care gaps
+  5. Summarize findings
 
-Output ONLY the numbered list, nothing else.
+Output ONLY the numbered list, nothing else. Maximum {MAX_PLAN_STEPS} steps.
 """
 
 EXECUTOR_SYSTEM = """You are executing a care gap check for a patient.
@@ -111,22 +118,34 @@ After calling tools, summarize what you found in 1-2 sentences, including
 any guideline citations retrieved.
 """
 
-REPORTER_SYSTEM = """You are a care gap report writer. Given the completed checks,
-write a clear, actionable summary that includes:
+REPORTER_SYSTEM = """You are a care gap report writer for a clinical AI system.
 
-1. Care gaps found (with priority level)
-2. The specific clinical guideline supporting each gap (cite source name and key criteria)
-3. Recommended interventions
-4. Any items that need clinical review
+You MUST produce your report in EXACTLY this format — no deviations:
 
-Format guideline citations as: [Source Name] — key recommendation text.
+Care Gap Report for Patient {PATIENT_ID}: {PATIENT_NAME}
 
-Example:
-- Mammogram overdue — HIGH priority
-  [USPSTF: Breast Cancer Screening] — Recommends biennial mammography for women 40-74 years
-  Action: Schedule mammogram within 30 days
+1. Care Gaps Found:
 
-Keep the report actionable and clinically grounded.
+* {Gap Name} — {HIGH|MEDIUM|LOW} priority [{Guideline Source: Title}] — {One sentence from the guideline supporting this gap}. Action: {Specific action with timeframe}.
+
+(repeat for each gap found)
+
+2. Clinical Review Items:
+
+* {Item requiring clinician review — medication management, specialist referral, etc.}
+
+(repeat for each review item)
+
+Summary: {2-3 sentences summarizing immediate priorities and timeframes.}
+
+STRICT RULES:
+- Every gap MUST have a priority: HIGH (schedule within 30 days), MEDIUM (60 days), LOW (no action or informational)
+- Every gap MUST have a guideline citation in square brackets: [Source: Title]
+- Every gap MUST have a concrete Action statement
+- If a screening is NOT applicable to this patient (e.g. mammogram for a male), list it as LOW priority and state "Action: No action required" with a brief explanation
+- Do NOT use headers like "##" or markdown bold "**" — use plain text with asterisk bullets
+- Do NOT add extra sections beyond the 3 specified (Care Gaps Found, Clinical Review Items, Summary)
+- Use the patient's actual name and ID from the data provided
 """
 
 
@@ -146,6 +165,8 @@ def plan_node(state: CareGapState) -> dict:
         if line and line[0].isdigit():
             step = line.split(".", 1)[-1].split(")", 1)[-1].strip()
             plan_steps.append(step)
+
+    plan_steps = plan_steps[:MAX_PLAN_STEPS]  # hard cap to stay within TPM limits
 
     return {
         "plan": plan_steps,
@@ -203,18 +224,35 @@ def should_continue_plan(state: CareGapState) -> str:
 def report_node(state: CareGapState) -> dict:
     planner_llm, _, _ = get_llms()
 
+    # Fetch patient name for the report header
+    patient_name = "Unknown"
+    try:
+        from tools.ehr_tools import get_patient_demographics
+        demo = get_patient_demographics.invoke({"patient_id": state["patient_id"]})
+        patient_name = demo.get("name", "Unknown")
+    except Exception:
+        pass
+
     checks_summary = "\n".join([
         f"Step {i+1}: {c['step']}\nResult: {c['result']}"
         for i, c in enumerate(state["completed_checks"])
     ])
 
+    # Fill the header placeholders in the system prompt
+    system_prompt = REPORTER_SYSTEM.replace(
+        "{PATIENT_ID}", state["patient_id"]
+    ).replace(
+        "{PATIENT_NAME}", patient_name
+    )
+
     response = planner_llm.invoke([
-        SystemMessage(content=REPORTER_SYSTEM),
+        SystemMessage(content=system_prompt),
         HumanMessage(
             content=(
-                f"Patient: {state['patient_id']}\n\n"
+                f"Patient ID: {state['patient_id']}\n"
+                f"Patient Name: {patient_name}\n\n"
                 f"Completed checks:\n{checks_summary}\n\n"
-                f"Write the care gap report with guideline citations."
+                f"Write the care gap report exactly following the format specified."
             )
         )
     ])

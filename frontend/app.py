@@ -222,7 +222,18 @@ if page == "🏠 Live Overview":
                     report = result.get("final_report", "")
                     if report:
                         st.markdown("**📋 Care Gap Report:**")
-                        st.markdown(report[:600] + ("..." if len(report) > 600 else ""))
+                        with st.container(border=True):
+                            st.markdown(report)
+
+                # Full mode — show care gap from workflow_results
+                if mode == "full":
+                    wf = result.get("workflow_results", {})
+                    care_report = (wf.get("care_gaps", {}).get("final_report", "") or
+                                   result.get("care_summary", ""))
+                    if care_report:
+                        st.markdown("**📋 Care Gap Report:**")
+                        with st.container(border=True):
+                            st.markdown(care_report)
 
                 # Auth results
                 auth_results = (result.get("auth_results") or
@@ -343,7 +354,7 @@ elif page == "⚡ Run Agent Workflow":
     with tab_fhir:
         st.markdown(
             "**Live FHIR R4 data** from `hapi.fhir.org/baseR4` — "
-            "the industry-standard healthcare data interchange format."
+            "This is the healthcare industry standard for EHR data exchange."
         )
 
         fhir_server = st.text_input(
@@ -486,7 +497,7 @@ elif page == "⚡ Run Agent Workflow":
 | `Immunization` | CVX codes | Vaccine history |
 | `ServiceRequest` | SNOMED | Prior auth requests |
 """)
-        st.caption("FHIR R4 is the industry-standard healthcare data interchange format used by Epic, Cerner, and major EHR vendors.")
+        st.caption("FHIR R4 is the healthcare industry standard adopted by Epic, Cerner, and major health systems.")
 
 
 # ── Page: Pending Reviews ─────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ This directly addresses the REQ001 problem — ESCALATE with 0.6 confidence
 often happened because the agent hadn't checked all available evidence.
 """
 import os
+import time
 from typing import Annotated, TypedDict, Literal
 
 from dotenv import load_dotenv
@@ -31,6 +32,10 @@ from tools.ehr_tools import EHR_TOOLS
 from tools.payer_tools import PAYER_TOOLS
 
 load_dotenv()
+
+# LLM singleton caches — avoids rebuilding on every graph node call
+_llm_cache: tuple | None = None
+_bare_llm_cache = None
 
 
 # ── State ──────────────────────────────────────────────────────────────────────
@@ -64,18 +69,26 @@ def _get_all_tools():
 
 
 def get_llm():
+    global _llm_cache
+    if _llm_cache is not None:
+        return _llm_cache
     load_dotenv()
     model = os.getenv("MODEL_NAME", "gpt-4o-mini")
     all_tools = _get_all_tools()
     llm = ChatOpenAI(model=model, temperature=0).bind_tools(all_tools)
     tool_node = ToolNode(all_tools)
-    return llm, tool_node
+    _llm_cache = (llm, tool_node)
+    return _llm_cache
 
 
 def get_bare_llm():
     """LLM without tools — used for critic and parser nodes."""
+    global _bare_llm_cache
+    if _bare_llm_cache is not None:
+        return _bare_llm_cache
     load_dotenv()
-    return ChatOpenAI(model=os.getenv("MODEL_NAME", "gpt-4o-mini"), temperature=0)
+    _bare_llm_cache = ChatOpenAI(model=os.getenv("MODEL_NAME", "gpt-4o-mini"), temperature=0)
+    return _bare_llm_cache
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -194,14 +207,24 @@ def critic_node(state: AuthState) -> dict:
 
 
 def should_revise(state: AuthState) -> Literal["primary_agent", "parse_decision"]:
-    """Edge: route back to agent if critic found issues, else finalize."""
+    """Edge: route back to agent if critic found issues, else finalize.
+
+    Hard stop: max 1 revision cycle ever (prevents infinite loops).
+    ESCALATE decisions are no longer auto-accepted — if the critic flags a
+    REVISE, we allow one revision even for ESCALATE, since the agent may have
+    missed evaluable criteria (e.g. case-sensitivity in lab value lookup).
+    """
     feedback = state.get("critic_feedback", "")
     revision_count = state.get("revision_count", 0)
 
-    # Max 1 revision cycle to avoid infinite loops
-    if "CRITIQUE: REVISE" in feedback and revision_count < 1:
+    # Never revise more than once
+    if revision_count >= 1:
+        return "parse_decision"
+
+    if "CRITIQUE: REVISE" in feedback:
         print(f"  [Critic] Requesting revision #{revision_count + 1}")
         return "primary_agent"
+
     return "parse_decision"
 
 
@@ -282,36 +305,50 @@ def build_prior_auth_graph():
 prior_auth_graph = build_prior_auth_graph()
 
 
-def run_prior_auth(patient_id: str, request_id: str, item_name: str) -> dict:
-    """Run the prior auth agent with Agent/Critic review pattern."""
-    result = prior_auth_graph.invoke({
-        "messages": [HumanMessage(content=(
-            f"Evaluate prior authorization request {request_id} for patient {patient_id}. "
-            f"Requested item: {item_name}. "
-            f"Use EHR tools, payer policy tools, clinical guidelines, and knowledge graph "
-            f"to make a determination."
-        ))],
-        "patient_id": patient_id,
-        "request_id": request_id,
-        "decision": "PENDING",
-        "confidence": 0.0,
-        "justification": "",
-        "critic_feedback": "",
-        "revision_count": 0
-    })
+def run_prior_auth(patient_id: str, request_id: str, item_name: str,
+                   _retries: int = 3) -> dict:
+    """Run the prior auth agent with Agent/Critic review pattern.
 
-    was_revised = result.get("revision_count", 0) > 0
-    return {
-        "patient_id": patient_id,
-        "request_id": request_id,
-        "item": item_name,
-        "decision": result["decision"],
-        "confidence": result["confidence"],
-        "justification": result["justification"],
-        "critic_reviewed": True,
-        "was_revised": was_revised,
-        "critic_feedback": result.get("critic_feedback", "")
-    }
+    Retries up to _retries times on OpenAI 429 rate-limit errors with
+    exponential backoff (10s, 20s, 40s) so transient TPM exhaustion in the
+    HIGH pathway doesn't silently drop auth results.
+    """
+    for attempt in range(_retries):
+        try:
+            result = prior_auth_graph.invoke({
+                "messages": [HumanMessage(content=(
+                    f"Evaluate prior authorization request {request_id} for patient {patient_id}. "
+                    f"Requested item: {item_name}. "
+                    f"Use EHR tools, payer policy tools, clinical guidelines, and knowledge graph "
+                    f"to make a determination."
+                ))],
+                "patient_id": patient_id,
+                "request_id": request_id,
+                "decision": "PENDING",
+                "confidence": 0.0,
+                "justification": "",
+                "critic_feedback": "",
+                "revision_count": 0
+            })
+            was_revised = result.get("revision_count", 0) > 0
+            return {
+                "patient_id": patient_id,
+                "request_id": request_id,
+                "item": item_name,
+                "decision": result["decision"],
+                "confidence": result["confidence"],
+                "justification": result["justification"],
+                "critic_reviewed": True,
+                "was_revised": was_revised,
+                "critic_feedback": result.get("critic_feedback", "")
+            }
+        except Exception as e:
+            if "429" in str(e) and attempt < _retries - 1:
+                wait = 10 * (2 ** attempt)  # 10s, 20s, 40s
+                print(f"  [PriorAuth] Rate limit hit, retrying in {wait}s (attempt {attempt + 1}/{_retries})...")
+                time.sleep(wait)
+            else:
+                raise
 
 
 if __name__ == "__main__":

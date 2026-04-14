@@ -2,15 +2,6 @@
 
 > **Automates prior authorization, care gap detection, and patient risk triage** using a production-grade multi-agent architecture — adaptive complexity routing, real-time OpenFDA drug safety, FHIR R4 integration, RAG over 63 clinical guidelines, and a human-in-the-loop clinician dashboard.
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.2-green.svg)](https://langchain-ai.github.io/langgraph/)
-[![CrewAI](https://img.shields.io/badge/CrewAI-0.80-purple.svg)](https://crewai.com)
-[![Prefect](https://img.shields.io/badge/Prefect-3.x-coral.svg)](https://prefect.io)
-[![LangSmith](https://img.shields.io/badge/LangSmith-traced-orange.svg)](https://smith.langchain.com)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-teal.svg)](https://fastapi.tiangolo.com)
-[![FHIR R4](https://img.shields.io/badge/FHIR-R4-red.svg)](https://hl7.org/fhir/R4/)
-
----
 
 ## What Problem This Solves
 
@@ -86,6 +77,36 @@ Patient Data (FHIR R4 / Synthetic)
 | Data quality framework | ✅ validation rules | ❌ | ❌ |
 | dbt SQL models | ✅ HEDIS-compatible mart | ❌ | ❌ |
 | REST API + audit log | ✅ FastAPI + SQLite/PG | ❌ | ❌ |
+
+---
+
+## Screenshots
+
+### 1 — Run Agent Workflow
+*Patient P004 (James Whitfield) selected — complexity scorer assigns HIGH tier based on Heart Failure + AFib + CKD Stage 4 + Diabetes + Warfarin (score 12). Full ICT pathway with drug safety is pre-selected.*
+
+![Run Agent Workflow](docs/screenshots/ss_1.png)
+
+---
+
+### 2 — HIGH Pathway: Adaptive Triage in Action (P004)
+*Live terminal feed during P004's HIGH-complexity run. Adaptive router dispatches the full ICT team: OpenFDA queries 4 medications, knowledge graph returns 22 findings across cardiology / nephrology / endocrinology, care gap agent executes a 13-step plan-and-execute loop with RAG citations.*
+
+![P004 HIGH Pathway Execution](docs/screenshots/ss_2.png)
+
+---
+
+### 3 — ICT Clinical Output (P004)
+*Synthesized action plan after the full ICT run. The system surfaces 3 urgent findings (CKD Stage 4 → RRT preparation, Warfarin + NSAIDs contraindication, Warfarin + Furosemide bleeding risk), 2 medication safety alerts from OpenFDA, prior auth status, and specialist referrals — all grounded in FDA labels and ACC/AHA/KDIGO guidelines.*
+
+![P004 Clinical ICT Output](docs/screenshots/ss_3.png)
+
+---
+
+### 4 — Analytics & Reporting Dashboard
+*Operational metrics over the last 30 days: 33 total agent runs, 75.8% automation rate (decisions that required no human review), 1 escalation. MDAgents complexity routing breakdown shows 57.1% of cases were routed to the full HIGH pathway — consistent with the synthetic cohort's multi-comorbidity profile. Adaptive routing estimated to save 36.9% of token cost vs. running all patients on the full pipeline.*
+
+![Analytics & Reporting](docs/screenshots/ss_4.png)
 
 ---
 

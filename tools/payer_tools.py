@@ -54,15 +54,18 @@ def check_criteria_met(patient_id: str, criteria_list: list, lab_values: dict) -
     results = []
     all_met = True
 
+    # Normalize lab_values keys to lowercase for case-insensitive lookup
+    lab_lower = {k.lower(): v for k, v in lab_values.items()}
+
     for criterion in criteria_list:
         criterion_lower = criterion.lower()
 
         # HbA1c criteria
-        if "hba1c" in criterion_lower and "hba1c" in lab_values:
+        if "hba1c" in criterion_lower and "hba1c" in lab_lower:
             threshold_str = [t for t in criterion_lower.split() if "." in t or t.isdigit()]
             if threshold_str:
                 threshold = float(threshold_str[0].replace("%", ""))
-                actual = float(lab_values["hba1c"])
+                actual = float(lab_lower["hba1c"])
                 met = actual > threshold
                 results.append({
                     "criterion": criterion,
@@ -74,11 +77,11 @@ def check_criteria_met(patient_id: str, criteria_list: list, lab_values: dict) -
                 continue
 
         # eGFR criteria
-        if "egfr" in criterion_lower and "egfr" in lab_values:
+        if "egfr" in criterion_lower and "egfr" in lab_lower:
             threshold_str = [t for t in criterion_lower.split() if t.isdigit()]
             if threshold_str:
                 threshold = float(threshold_str[0])
-                actual = float(lab_values["egfr"])
+                actual = float(lab_lower["egfr"])
                 met = actual < threshold
                 results.append({
                     "criterion": criterion,
@@ -90,11 +93,11 @@ def check_criteria_met(patient_id: str, criteria_list: list, lab_values: dict) -
                 continue
 
         # LDL criteria
-        if "ldl" in criterion_lower and "ldl" in lab_values:
+        if "ldl" in criterion_lower and "ldl" in lab_lower:
             threshold_str = [t for t in criterion_lower.split() if t.isdigit()]
             if threshold_str:
                 threshold = float(threshold_str[0])
-                actual = float(lab_values["ldl"])
+                actual = float(lab_lower["ldl"])
                 met = actual > threshold
                 results.append({
                     "criterion": criterion,
