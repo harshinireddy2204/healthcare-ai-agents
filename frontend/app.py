@@ -671,17 +671,15 @@ elif page == "📈 Analytics & Reporting":
     )
 
     try:
-        import sys
-        sys.path.insert(0, ".")
-        from analytics.queries import (
-            get_agent_performance_summary,
-            get_prior_auth_metrics,
-            get_care_gap_metrics,
-            get_complexity_distribution,
-            get_patient_cohort_analysis,
-            get_review_queue_sla_metrics
-        )
-        from analytics.data_quality import run_data_quality_check
+        def _api_get(path: str, params: dict = None):
+            r = requests.get(f"{API_BASE}{path}", params=params, timeout=15)
+            r.raise_for_status()
+            return r.json()
+
+        def _api_post(path: str):
+            r = requests.post(f"{API_BASE}{path}", timeout=30)
+            r.raise_for_status()
+            return r.json()
 
         tab_ops, tab_auth, tab_gaps, tab_cohorts, tab_dq = st.tabs([
             "📊 Operations",
@@ -694,7 +692,7 @@ elif page == "📈 Analytics & Reporting":
         # ── Operations tab ─────────────────────────────────────────────────────
         with tab_ops:
             st.markdown("#### Agent Performance — Last 30 Days")
-            perf = get_agent_performance_summary(30)
+            perf = _api_get("/analytics/performance", {"days": 30})
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Total Runs", perf["total_runs"])
             c2.metric("Completed", perf["completed"])
@@ -703,7 +701,7 @@ elif page == "📈 Analytics & Reporting":
             c5.metric("Unique Patients", perf["unique_patients"])
 
             st.markdown("---")
-            comp = get_complexity_distribution(30)
+            comp = _api_get("/analytics/complexity", {"days": 30})
             st.markdown("#### MDAgents Complexity Routing Impact")
             col1, col2, col3 = st.columns(3)
             col1.metric("🟢 LOW pathway", f"{comp['pct_low']}%", "single agent")
@@ -716,7 +714,7 @@ elif page == "📈 Analytics & Reporting":
                     f"of token costs vs running full ICT on every patient."
                 )
 
-            sla = get_review_queue_sla_metrics()
+            sla = _api_get("/analytics/sla")
             st.markdown("---")
             st.markdown("#### HITL Review Queue SLA")
             s1, s2, s3, s4 = st.columns(4)
@@ -728,7 +726,7 @@ elif page == "📈 Analytics & Reporting":
         # ── Prior Auth tab ─────────────────────────────────────────────────────
         with tab_auth:
             st.markdown("#### Prior Authorization Metrics")
-            auth = get_prior_auth_metrics(30)
+            auth = _api_get("/analytics/prior-auth", {"days": 30})
             a1, a2, a3, a4 = st.columns(4)
             a1.metric("Total Requests", auth["total_auth_requests"])
             a2.metric("Approval Rate", f"{auth['approval_rate']}%")
@@ -756,7 +754,7 @@ elif page == "📈 Analytics & Reporting":
         # ── Care Gaps tab ──────────────────────────────────────────────────────
         with tab_gaps:
             st.markdown("#### Care Gap Population Analysis")
-            gaps = get_care_gap_metrics(30)
+            gaps = _api_get("/analytics/care-gaps", {"days": 30})
             g1, g2, g3, g4 = st.columns(4)
             g1.metric("Patients Analyzed", gaps["patients_analyzed"])
             g2.metric("With Gaps", gaps["patients_with_gaps"])
@@ -784,7 +782,7 @@ elif page == "📈 Analytics & Reporting":
         with tab_cohorts:
             st.markdown("#### Patient Cohort Segmentation")
             st.caption("SQL-powered cohort analysis — compatible with Snowflake / PostgreSQL / BigQuery")
-            cohorts = get_patient_cohort_analysis()
+            cohorts = _api_get("/analytics/cohorts")
             if cohorts:
                 import pandas as pd
                 df = pd.DataFrame(cohorts)[["cohort", "patient_count", "pct_of_population", "patient_ids"]]
@@ -816,7 +814,7 @@ elif page == "📈 Analytics & Reporting":
 
             if st.button("▶ Run Data Quality Check", type="primary"):
                 with st.spinner("Running quality checks..."):
-                    report = run_data_quality_check()
+                    report = _api_post("/analytics/data-quality")
 
                 status_icon = "✅" if report["status"] == "PASS" else "❌"
                 st.markdown(f"### {status_icon} {report['summary']}")
@@ -998,7 +996,9 @@ elif page == "📚 Guidelines KB":
     col4.metric("Target Sources", 63)
 
     if collection.get("total_chunks", 0) == 0:
-        st.warning("Guidelines not loaded. Run `python rag/refresh_flow.py` first.")
+        st.warning(
+            "Guidelines not loaded. Click **⚡ Full Refresh — All 63 Sources** below to populate the knowledge base (~5 min)."
+        )
 
     st.markdown("---")
 

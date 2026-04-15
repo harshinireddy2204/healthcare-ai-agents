@@ -62,6 +62,20 @@ def init_db():
 @app.on_event("startup")
 def on_startup():
     init_db()
+    # Seed guidelines KB in background if store is empty (first deploy)
+    import threading
+    def _seed_guidelines():
+        try:
+            from rag.embedder import get_collection_stats
+            stats = get_collection_stats()
+            if stats.get("total_chunks", 0) == 0:
+                print("[Startup] Guidelines store empty — seeding in background...")
+                from rag.refresh_flow import manual_refresh_flow
+                manual_refresh_flow(source_ids=None, force=False, triggered_by="startup")
+                print("[Startup] Guidelines seeding complete.")
+        except Exception as e:
+            print(f"[Startup] Guidelines seed skipped: {e}")
+    threading.Thread(target=_seed_guidelines, daemon=True).start()
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -402,6 +416,50 @@ def search_guidelines(q: str, category: Optional[str] = None, n: int = 3):
         }
     except Exception as e:
         return {"error": str(e), "query": q}
+
+
+# ── Analytics endpoints ───────────────────────────────────────────────────────
+
+@app.get("/analytics/performance")
+def analytics_performance(days: int = 30):
+    from analytics.queries import get_agent_performance_summary
+    return get_agent_performance_summary(days)
+
+
+@app.get("/analytics/prior-auth")
+def analytics_prior_auth(days: int = 30):
+    from analytics.queries import get_prior_auth_metrics
+    return get_prior_auth_metrics(days)
+
+
+@app.get("/analytics/care-gaps")
+def analytics_care_gaps(days: int = 30):
+    from analytics.queries import get_care_gap_metrics
+    return get_care_gap_metrics(days)
+
+
+@app.get("/analytics/complexity")
+def analytics_complexity(days: int = 30):
+    from analytics.queries import get_complexity_distribution
+    return get_complexity_distribution(days)
+
+
+@app.get("/analytics/cohorts")
+def analytics_cohorts():
+    from analytics.queries import get_patient_cohort_analysis
+    return get_patient_cohort_analysis()
+
+
+@app.get("/analytics/sla")
+def analytics_sla():
+    from analytics.queries import get_review_queue_sla_metrics
+    return get_review_queue_sla_metrics()
+
+
+@app.post("/analytics/data-quality")
+def analytics_data_quality():
+    from analytics.data_quality import run_data_quality_check
+    return run_data_quality_check()
 
 
 def _run_guidelines_refresh_background(
