@@ -80,6 +80,12 @@ Patient Data (FHIR R4 / Synthetic)
 
 ---
 
+## Live Demo
+
+**[https://healthcare-ai-agents.streamlit.app/](https://healthcare-ai-agents.streamlit.app/)**
+
+---
+
 ## Screenshots
 
 ### 1 — Run Agent Workflow
