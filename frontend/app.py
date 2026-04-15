@@ -135,6 +135,10 @@ with st.sidebar:
     st.markdown("👤 HITL Escalation")
 
     st.markdown("---")
+    st.markdown("**💬 Share feedback**")
+    st.markdown("[→ Leave feedback on GitHub](https://github.com/harshinireddy2204/healthcare-ai-agents/issues/new?title=Feedback&labels=feedback)")
+    st.markdown("[→ Connect on LinkedIn](https://linkedin.com/in/harshini-reddy22/)")
+    st.markdown("---")
     st.caption("Synthetic data only — HIPAA-safe")
     st.caption("Research: MDAgents (NeurIPS'24), TxAgent, MALADE")
 
@@ -143,6 +147,16 @@ with st.sidebar:
 
 if page == "🏠 Live Overview":
     st.title("🏠 Multi-Agent Clinical Operations — Live")
+    # Welcome banner for LinkedIn visitors
+    st.info(
+        "👋 **Welcome!** This is a live multi-agent clinical AI system — "
+        "go to **⚡ Run Agent Workflow**, pick a patient, and trigger a workflow. "
+        "Results appear here in 60–120 seconds. "
+        "Built by [Harshini Reddy](https://linkedin.com/in/harshini-reddy22/) · "
+        "[GitHub](https://github.com/harshinireddy2204/healthcare-ai-agents)",
+        icon=None
+    )
+
     st.markdown("Real-time view of the AI agent system processing patients.")
 
     # Auto-refresh toggle
@@ -338,12 +352,18 @@ elif page == "⚡ Run Agent Workflow":
             "Workflow mode",
             ["full", "auth_only", "care_gap_only"],
             format_func=lambda m: {
-                "full": "🤖 Full adaptive triage (complexity router + all agents)",
-                "auth_only": "🔐 Prior auth only (with Agent/Critic review)",
-                "care_gap_only": "📋 Care gap only (with RAG guideline citations)"
+                "full": "🤖 Full triage",
+                "auth_only": "🔐 Prior auth + Critic",
+                "care_gap_only": "📋 Care gaps + RAG"
             }[m],
             horizontal=True
         )
+        mode_descriptions = {
+            "full": "Complexity router → LOW/MOD/HIGH pathway → all agents",
+            "auth_only": "LangGraph ReAct + Agent/Critic review pattern (MALADE)",
+            "care_gap_only": "Plan-and-Execute + RAG over 63 clinical guidelines"
+        }
+        st.caption(f"ℹ️ {mode_descriptions[mode]}")
 
         if st.button("🚀 Run Workflow", type="primary"):
             with st.spinner(f"Triggering {mode} workflow for {patient_id}..."):
