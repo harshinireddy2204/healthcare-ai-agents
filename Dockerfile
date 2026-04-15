@@ -9,6 +9,9 @@ WORKDIR /app
 
 # Install Python deps first (layer cache)
 COPY requirements.txt .
+# Install CPU-only PyTorch first — prevents pip from pulling the 2.5 GB CUDA build
+# when sentence-transformers is installed below. Saves ~2.3 GB in the final image.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source
