@@ -18,7 +18,6 @@ This directly addresses the REQ001 problem — ESCALATE with 0.6 confidence
 often happened because the agent hadn't checked all available evidence.
 """
 import os
-import time
 from typing import Annotated, TypedDict, Literal
 
 from dotenv import load_dotenv
@@ -32,10 +31,6 @@ from tools.ehr_tools import EHR_TOOLS
 from tools.payer_tools import PAYER_TOOLS
 
 load_dotenv()
-
-# LLM singleton caches — avoids rebuilding on every graph node call
-_llm_cache: tuple | None = None
-_bare_llm_cache = None
 
 
 # ── State ──────────────────────────────────────────────────────────────────────
@@ -69,26 +64,18 @@ def _get_all_tools():
 
 
 def get_llm():
-    global _llm_cache
-    if _llm_cache is not None:
-        return _llm_cache
     load_dotenv()
     model = os.getenv("MODEL_NAME", "gpt-4o-mini")
     all_tools = _get_all_tools()
     llm = ChatOpenAI(model=model, temperature=0).bind_tools(all_tools)
     tool_node = ToolNode(all_tools)
-    _llm_cache = (llm, tool_node)
-    return _llm_cache
+    return llm, tool_node
 
 
 def get_bare_llm():
     """LLM without tools — used for critic and parser nodes."""
-    global _bare_llm_cache
-    if _bare_llm_cache is not None:
-        return _bare_llm_cache
     load_dotenv()
-    _bare_llm_cache = ChatOpenAI(model=os.getenv("MODEL_NAME", "gpt-4o-mini"), temperature=0)
-    return _bare_llm_cache
+    return ChatOpenAI(model=os.getenv("MODEL_NAME", "gpt-4o-mini"), temperature=0)
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -114,26 +101,25 @@ JUSTIFICATION: [cite specific guideline or payer criteria]
 
 CRITIC_SYSTEM = """You are a senior clinical reviewer auditing a prior authorization decision.
 
-Your job is to find logical gaps, missing evidence, or errors in the primary agent's reasoning.
+Your ONLY job is to catch clear logical errors — not to find improvements.
 
-Check for:
-1. Were all payer criteria evaluated? (not just some)
-2. Was the clinical guideline cited and relevant?
-3. Is the confidence score justified by the evidence?
-4. Were any critical lab values or diagnoses overlooked?
-5. Is the decision consistent with standard clinical practice?
+APPROVE the decision if ANY of these are true:
+- The agent cited a specific guideline or payer policy
+- The confidence is >= 0.65
+- The decision is ESCALATE (this is always a valid terminal state — never revise ESCALATE)
+- Some criteria returned "manual_review_required" (this means data was unavailable — acceptable)
+- The justification references the patient's actual clinical data
 
-IMPORTANT: If criteria evaluation returned "manual_review_required", this means
-the data is genuinely not available for automated evaluation. This is ACCEPTABLE —
-do NOT request a revision just because some criteria need manual review.
-Only request revision if the agent SKIPPED criteria it could have evaluated.
+Only respond CRITIQUE: REVISE if ALL of these are true:
+- The agent made a clear factual error (e.g. wrong patient data cited)
+- The agent had the tool available AND the data was present AND it was skipped
+- The error would materially change the decision
 
-If the reasoning is sound (even if some criteria require manual review):
-  CRITIQUE: APPROVED — reasoning is sound.
+When in doubt — APPROVE. Over-revision wastes clinical time and causes rate limits.
 
-If the agent skipped evaluable criteria or made a logical error:
-  CRITIQUE: REVISE — [specific issue]
-  REQUIRED_CHECKS: [what to check]
+Respond with exactly ONE of:
+  CRITIQUE: APPROVED — [brief reason]
+  CRITIQUE: REVISE — [one specific error, max 1 sentence]
 """
 
 REVISION_SYSTEM = """You are revising your prior authorization decision based on
@@ -207,20 +193,47 @@ def critic_node(state: AuthState) -> dict:
 
 
 def should_revise(state: AuthState) -> Literal["primary_agent", "parse_decision"]:
-    """Edge: route back to agent if critic found issues, else finalize.
-
-    Hard stop: max 1 revision cycle ever (prevents infinite loops).
-    ESCALATE decisions are no longer auto-accepted — if the critic flags a
-    REVISE, we allow one revision even for ESCALATE, since the agent may have
-    missed evaluable criteria (e.g. case-sensitivity in lab value lookup).
+    """
+    Route back to agent only for clear logical errors.
+    Hard stops — always go to parse_decision if:
+      - Already revised once
+      - Decision is ESCALATE (valid terminal state)
+      - Decision has confidence >= 0.65 (sufficient certainty)
+      - Critic said APPROVED
     """
     feedback = state.get("critic_feedback", "")
     revision_count = state.get("revision_count", 0)
 
-    # Never revise more than once
+    # Hard stop 1: max one revision ever
     if revision_count >= 1:
         return "parse_decision"
 
+    # Hard stop 2: extract decision + confidence from messages
+    last_decision = "ESCALATE"
+    last_confidence = 0.5
+    for msg in reversed(state["messages"]):
+        content = getattr(msg, "content", "")
+        if "DECISION:" in content:
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.startswith("DECISION:"):
+                    last_decision = line.replace("DECISION:", "").strip()
+                elif line.startswith("CONFIDENCE:"):
+                    try:
+                        last_confidence = float(line.replace("CONFIDENCE:", "").strip())
+                    except ValueError:
+                        pass
+            break
+
+    # ESCALATE is always a valid final state — accept it
+    if last_decision == "ESCALATE":
+        return "parse_decision"
+
+    # High confidence decisions don't need revision
+    if last_confidence >= 0.65:
+        return "parse_decision"
+
+    # Only revise on explicit CRITIQUE: REVISE from critic
     if "CRITIQUE: REVISE" in feedback:
         print(f"  [Critic] Requesting revision #{revision_count + 1}")
         return "primary_agent"
@@ -305,50 +318,36 @@ def build_prior_auth_graph():
 prior_auth_graph = build_prior_auth_graph()
 
 
-def run_prior_auth(patient_id: str, request_id: str, item_name: str,
-                   _retries: int = 3) -> dict:
-    """Run the prior auth agent with Agent/Critic review pattern.
+def run_prior_auth(patient_id: str, request_id: str, item_name: str) -> dict:
+    """Run the prior auth agent with Agent/Critic review pattern."""
+    result = prior_auth_graph.invoke({
+        "messages": [HumanMessage(content=(
+            f"Evaluate prior authorization request {request_id} for patient {patient_id}. "
+            f"Requested item: {item_name}. "
+            f"Use EHR tools, payer policy tools, clinical guidelines, and knowledge graph "
+            f"to make a determination."
+        ))],
+        "patient_id": patient_id,
+        "request_id": request_id,
+        "decision": "PENDING",
+        "confidence": 0.0,
+        "justification": "",
+        "critic_feedback": "",
+        "revision_count": 0
+    })
 
-    Retries up to _retries times on OpenAI 429 rate-limit errors with
-    exponential backoff (10s, 20s, 40s) so transient TPM exhaustion in the
-    HIGH pathway doesn't silently drop auth results.
-    """
-    for attempt in range(_retries):
-        try:
-            result = prior_auth_graph.invoke({
-                "messages": [HumanMessage(content=(
-                    f"Evaluate prior authorization request {request_id} for patient {patient_id}. "
-                    f"Requested item: {item_name}. "
-                    f"Use EHR tools, payer policy tools, clinical guidelines, and knowledge graph "
-                    f"to make a determination."
-                ))],
-                "patient_id": patient_id,
-                "request_id": request_id,
-                "decision": "PENDING",
-                "confidence": 0.0,
-                "justification": "",
-                "critic_feedback": "",
-                "revision_count": 0
-            })
-            was_revised = result.get("revision_count", 0) > 0
-            return {
-                "patient_id": patient_id,
-                "request_id": request_id,
-                "item": item_name,
-                "decision": result["decision"],
-                "confidence": result["confidence"],
-                "justification": result["justification"],
-                "critic_reviewed": True,
-                "was_revised": was_revised,
-                "critic_feedback": result.get("critic_feedback", "")
-            }
-        except Exception as e:
-            if "429" in str(e) and attempt < _retries - 1:
-                wait = 10 * (2 ** attempt)  # 10s, 20s, 40s
-                print(f"  [PriorAuth] Rate limit hit, retrying in {wait}s (attempt {attempt + 1}/{_retries})...")
-                time.sleep(wait)
-            else:
-                raise
+    was_revised = result.get("revision_count", 0) > 0
+    return {
+        "patient_id": patient_id,
+        "request_id": request_id,
+        "item": item_name,
+        "decision": result["decision"],
+        "confidence": result["confidence"],
+        "justification": result["justification"],
+        "critic_reviewed": True,
+        "was_revised": was_revised,
+        "critic_feedback": result.get("critic_feedback", "")
+    }
 
 
 if __name__ == "__main__":
