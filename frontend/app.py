@@ -24,7 +24,22 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
-API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+# ── API URL: reads from Streamlit secrets (cloud) or .env (local) ─────────────
+# On Streamlit Community Cloud: App Settings → Secrets → add API_BASE_URL
+# Locally: set API_BASE_URL in your .env file or leave as default
+def _get_api_base() -> str:
+    # Streamlit Cloud secrets take priority
+    try:
+        url = st.secrets.get("API_BASE_URL", "")
+        if url:
+            return url.rstrip("/")
+    except Exception:
+        pass
+    # Fall back to environment variable or localhost
+    return os.getenv("API_BASE_URL", "http://localhost:8000")
+
+API_BASE = _get_api_base()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 

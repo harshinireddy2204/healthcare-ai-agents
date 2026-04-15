@@ -1,0 +1,29 @@
+# render.yaml
+# Deploy to Render.com as a free Web Service
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: healthcare-ai-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: DATABASE_URL
+        value: sqlite:///./data/healthcare_agents.db
+      - key: MODEL_NAME
+        value: gpt-4o-mini
+      - key: CONFIDENCE_THRESHOLD
+        value: "0.75"
+      - key: USE_FHIR
+        value: "true"
+      - key: FHIR_BASE_URL
+        value: https://hapi.fhir.org/baseR4
+      - key: HF_HUB_DISABLE_PROGRESS_BARS
+        value: "1"
+      - key: HUGGINGFACE_HUB_VERBOSITY
+        value: error
+    healthCheckPath: /health
+    autoDeploy: true
