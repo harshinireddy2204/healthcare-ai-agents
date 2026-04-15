@@ -1,35 +1,35 @@
 FROM python:3.11-slim
 
-# System deps — minimal set only
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# ── Install CPU-only PyTorch FIRST (saves ~1.5GB vs default CUDA build) ──────
-# Default torch pulls CUDA build (~2.5GB). CPU-only is ~800MB.
-# sentence-transformers only needs CPU inference — no GPU required.
-RUN pip install --no-cache-dir \
-    torch==2.2.0 --index-url https://download.pytorch.org/whl/cpu
-
-# ── Install remaining dependencies ───────────────────────────────────────────
+# Install Python deps first (layer cache)
 COPY requirements.txt .
+# Install CPU-only PyTorch first — prevents pip from pulling the 2.5 GB CUDA build
+# when sentence-transformers is installed below. Saves ~2.3 GB in the final image.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Copy source ───────────────────────────────────────────────────────────────
+# Copy source
 COPY . .
 
-# ── Create persistent data directories ───────────────────────────────────────
+# Create persistent data directories
 RUN mkdir -p data/chroma_guidelines data/guideline_cache
 
-# ── Seed demo database ────────────────────────────────────────────────────────
+# Seed demo database on build so first visitors see real data
 RUN python -c "from api.main import init_db; init_db()" && \
     python scripts/reset_demo_data.py
 
+# Expose FastAPI port
 EXPOSE 8000
 
+# Health check — Railway and Render use this to know when the container is ready
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Start the API
+CMD uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2
