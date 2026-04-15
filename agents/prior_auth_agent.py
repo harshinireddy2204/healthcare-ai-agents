@@ -29,6 +29,7 @@ from langgraph.prebuilt import ToolNode
 
 from tools.ehr_tools import EHR_TOOLS
 from tools.payer_tools import PAYER_TOOLS
+from utils.llm_utils import llm_invoke
 
 load_dotenv()
 
@@ -151,7 +152,7 @@ def primary_agent_node(state: AuthState) -> dict:
             content=f"Please revise your decision based on this critique:\n{state['critic_feedback']}"
         )]
 
-    response = llm.invoke(messages)
+    response = llm_invoke(llm, messages)
     return {"messages": [response]}
 
 
@@ -178,7 +179,7 @@ def critic_node(state: AuthState) -> dict:
     if not last_decision_msg:
         return {"critic_feedback": "CRITIQUE: APPROVED — no decision found to review"}
 
-    critique_response = critic_llm.invoke([
+    critique_response = llm_invoke(critic_llm, [
         SystemMessage(content=CRITIC_SYSTEM),
         HumanMessage(content=(
             f"Review this prior authorization decision:\n\n"

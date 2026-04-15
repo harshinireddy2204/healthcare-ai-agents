@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 
 import httpx
 from langchain_openai import ChatOpenAI
+from utils.llm_utils import llm_invoke
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END
@@ -282,7 +283,7 @@ def synthesize_report_node(state: DrugSafetyState) -> dict:
         for f in state["kg_findings"]
     ]) if state["kg_findings"] else "No KG findings"
 
-    response = llm.invoke([
+    response = llm_invoke(llm, [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=f"""
 Patient: {state['patient_id']}

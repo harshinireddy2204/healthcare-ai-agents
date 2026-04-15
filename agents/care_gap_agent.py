@@ -23,9 +23,13 @@ from langgraph.prebuilt import ToolNode
 
 from tools.ehr_tools import EHR_TOOLS
 from tools.risk_tools import RISK_TOOLS
+from utils.llm_utils import llm_invoke
+
+_kg_tools_logged = False
 
 def _get_all_tools_with_kg():
     """Load all tools including knowledge graph if available."""
+    global _kg_tools_logged
     tools = EHR_TOOLS + RISK_TOOLS
     try:
         from rag.retriever import GUIDELINE_TOOLS
@@ -35,7 +39,9 @@ def _get_all_tools_with_kg():
     try:
         from knowledge_graph.clinical_graph import KNOWLEDGE_GRAPH_TOOLS
         tools = tools + KNOWLEDGE_GRAPH_TOOLS
-        print("[CareGapAgent] Knowledge graph tools loaded ✓")
+        if not _kg_tools_logged:
+            print("[CareGapAgent] Knowledge graph tools loaded ✓")
+            _kg_tools_logged = True
     except Exception as e:
         print(f"[CareGapAgent] KG tools not available: {e}")
     return tools
@@ -68,44 +74,37 @@ def _get_all_tools_orig():
     return tools
 
 
-# ── LLM singleton cache (avoids rebuilding on every graph node call) ──────────
-
-_llm_cache: tuple | None = None
-
-MAX_PLAN_STEPS = 7  # cap to prevent TPM exhaustion on complex patients
+# ── Lazy LLM factory ──────────────────────────────────────────────────────────
 
 def get_llms():
-    global _llm_cache
-    if _llm_cache is not None:
-        return _llm_cache
     load_dotenv()
     model = os.getenv("MODEL_NAME", "gpt-4o-mini")
     all_tools = _get_all_tools_with_kg()
     planner = ChatOpenAI(model=model, temperature=0)
     executor = ChatOpenAI(model=model, temperature=0).bind_tools(all_tools)
     tools = ToolNode(all_tools)
-    _llm_cache = (planner, executor, tools)
-    return _llm_cache
+    return planner, executor, tools
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-PLANNER_SYSTEM = f"""You are a clinical care gap specialist. Your job is to plan
+PLANNER_SYSTEM = """You are a clinical care gap specialist. Your job is to plan
 a systematic review of a patient's preventive care needs.
 
-Given a patient ID, generate a numbered list of EXACTLY 5-7 specific data checks.
-Each check should be a single concrete action. Consolidate where possible
-(e.g. check all screenings in one step, search guidelines for all gaps in one step).
-Always include a step to search clinical guidelines for evidence-based citations.
+Given a patient ID, generate a numbered list of specific data checks to perform.
+Each check should be a single concrete action. Always include a step to search
+clinical guidelines for evidence-based citations.
 
-Example plan (5 steps):
+Example plan:
   1. Get patient demographics (age, gender, diagnoses)
-  2. Check screening history (colonoscopy, flu vaccine, mammogram if applicable)
-  3. Calculate risk score using diagnoses and labs
-  4. Search clinical guidelines for any identified care gaps
-  5. Summarize findings
+  2. Check mammogram screening history
+  3. Search clinical guidelines for mammogram recommendations (if female 40+)
+  4. Check colonoscopy history
+  5. Check flu vaccine history
+  6. Calculate risk score
+  7. Search clinical guidelines for any identified care gaps
 
-Output ONLY the numbered list, nothing else. Maximum {MAX_PLAN_STEPS} steps.
+Output ONLY the numbered list, nothing else.
 """
 
 EXECUTOR_SYSTEM = """You are executing a care gap check for a patient.
@@ -126,26 +125,25 @@ Care Gap Report for Patient {PATIENT_ID}: {PATIENT_NAME}
 
 1. Care Gaps Found:
 
-* {Gap Name} — {HIGH|MEDIUM|LOW} priority [{Guideline Source: Title}] — {One sentence from the guideline supporting this gap}. Action: {Specific action with timeframe}.
+* Blood Pressure Screening — HIGH priority [USPSTF: Hypertension in Adults Screening] — Adults 18+ should be screened for hypertension to reduce cardiovascular events. Action: Schedule blood pressure check within 30 days.
 
-(repeat for each gap found)
+(use the above line as the exact format — citation is [ORGANIZATION: Guideline Title], NOT "Guideline Source:")
 
 2. Clinical Review Items:
 
-* {Item requiring clinician review — medication management, specialist referral, etc.}
+* Review current medications for interactions or contraindications.
 
-(repeat for each review item)
-
-Summary: {2-3 sentences summarizing immediate priorities and timeframes.}
+Summary: Immediate priorities are X and Y. All HIGH gaps should be addressed within 30 days.
 
 STRICT RULES:
-- Every gap MUST have a priority: HIGH (schedule within 30 days), MEDIUM (60 days), LOW (no action or informational)
-- Every gap MUST have a guideline citation in square brackets: [Source: Title]
-- Every gap MUST have a concrete Action statement
-- If a screening is NOT applicable to this patient (e.g. mammogram for a male), list it as LOW priority and state "Action: No action required" with a brief explanation
-- Do NOT use headers like "##" or markdown bold "**" — use plain text with asterisk bullets
-- Do NOT add extra sections beyond the 3 specified (Care Gaps Found, Clinical Review Items, Summary)
-- Use the patient's actual name and ID from the data provided
+- Citation format MUST be: [ORGANIZATION: Title] e.g. [USPSTF: Breast Cancer Screening] or [ADA 2025: Diabetes Standards] or [KDIGO 2024: CKD Management] or [CDC: Adult Immunization 2025]
+- NEVER write "Guideline Source:" — just the organization name directly in brackets
+- Every gap MUST have HIGH / MEDIUM / LOW priority
+- Every gap MUST have a concrete Action with timeframe
+- Mammogram for a male patient = LOW priority, "Action: No action required — not applicable to male patients"
+- Do NOT use markdown bold ** or headers ## — plain text only
+- Exactly 3 sections: Care Gaps Found, Clinical Review Items, Summary
+- Use the patient's actual name and ID
 """
 
 
@@ -154,7 +152,7 @@ STRICT RULES:
 def plan_node(state: CareGapState) -> dict:
     planner_llm, _, _ = get_llms()
 
-    response = planner_llm.invoke([
+    response = llm_invoke(planner_llm, [
         SystemMessage(content=PLANNER_SYSTEM),
         HumanMessage(content=f"Create a care gap review plan for patient {state['patient_id']}.")
     ])
@@ -165,8 +163,6 @@ def plan_node(state: CareGapState) -> dict:
         if line and line[0].isdigit():
             step = line.split(".", 1)[-1].split(")", 1)[-1].strip()
             plan_steps.append(step)
-
-    plan_steps = plan_steps[:MAX_PLAN_STEPS]  # hard cap to stay within TPM limits
 
     return {
         "plan": plan_steps,
@@ -191,7 +187,7 @@ def execute_step_node(state: CareGapState) -> dict:
         )
     ]
 
-    response = executor_llm.invoke(messages)
+    response = llm_invoke(executor_llm, messages)
     new_messages = [response]
 
     if hasattr(response, "tool_calls") and response.tool_calls:
@@ -199,7 +195,7 @@ def execute_step_node(state: CareGapState) -> dict:
         tool_results = tool_node.invoke({"messages": messages_with_tools})
         new_messages.extend(tool_results["messages"])
         all_msgs = messages + new_messages
-        final = executor_llm.invoke(all_msgs)
+        final = llm_invoke(executor_llm, all_msgs)
         new_messages.append(final)
 
     completed = state.get("completed_checks", [])
@@ -245,7 +241,7 @@ def report_node(state: CareGapState) -> dict:
         "{PATIENT_NAME}", patient_name
     )
 
-    response = planner_llm.invoke([
+    response = llm_invoke(planner_llm, [
         SystemMessage(content=system_prompt),
         HumanMessage(
             content=(

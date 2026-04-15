@@ -33,7 +33,38 @@ load_dotenv()
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.75"))
 
 
-# ── CrewAI tool wrappers ──────────────────────────────────────────────────────
+# ── Timeout helper ────────────────────────────────────────────────────────────
+
+def _run_with_timeout(fn, args=(), timeout_seconds=90, fallback=None):
+    """
+    Run fn(*args) with a hard timeout using a thread.
+    Returns fallback dict if timeout is exceeded.
+    This prevents single LLM calls from hanging the entire workflow.
+    """
+    import threading
+    result_holder = [fallback]
+    exception_holder = [None]
+
+    def target():
+        try:
+            result_holder[0] = fn(*args)
+        except Exception as e:
+            exception_holder[0] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout=timeout_seconds)
+
+    if t.is_alive():
+        print(f"  [Timeout] {fn.__name__} exceeded {timeout_seconds}s — using fallback")
+        return fallback
+
+    if exception_holder[0]:
+        raise exception_holder[0]
+
+    return result_holder[0]
+
+
 
 class PriorAuthTool(BaseTool):
     name: str = "prior_auth_agent"
@@ -213,63 +244,122 @@ def _run_low_complexity(patient_id: str, profile: dict) -> dict:
                     auth_results.append({"error": str(e)})
         results["auth_results"] = auth_results
 
+    # Build formatted crew_output so the frontend renders the same as MODERATE/HIGH
+    import json as _json
+    care_section = results.get("care_gaps", {})
+    care_text = care_section.get("final_report", care_section.get("error", "Not available"))
+    auth_text = _json.dumps(results.get("auth_results", []), indent=2) if results.get("auth_results") else "No pending auth requests"
+    results["crew_output"] = (
+        f"LOW pathway completed for patient {patient_id}.\n\n"
+        f"CARE GAPS:\n{care_text}\n\n"
+        f"PRIOR AUTH:\n{auth_text}"
+    )
+
     return results
 
 
 
 def _run_moderate_complexity(patient_id: str) -> dict:
-    """MODERATE pathway: standard CrewAI 3-agent team."""
+    """
+    MODERATE pathway: pre-computed sequential approach.
+
+    Same pattern as HIGH but without drug safety analysis.
+    Runs care gap + prior auth as direct LangGraph calls (no CrewAI tool loops),
+    then uses KG for risk summary. No concurrent agents = no rate limit saturation.
+    """
     import time
-    print(f"[Supervisor] MODERATE pathway: CrewAI MDT for {patient_id}")
-    model = os.getenv("MODEL_NAME", "gpt-4o-mini")
+    print(f"[Supervisor] MODERATE pathway: sequential MDT for {patient_id}")
 
-    risk_assessor = Agent(
-        role="Clinical Risk Assessor",
-        goal="Evaluate patient risk level and identify priority workflows.",
-        backstory="Clinical informaticist specializing in risk stratification.",
-        tools=[RiskScoreTool(), KnowledgeGraphTool()],
-        llm=model, verbose=False
-    )
-    auth_coordinator = Agent(
-        role="Prior Authorization Coordinator",
-        goal="Process all pending prior authorization requests.",
-        backstory="Prior auth specialist with deep payer policy knowledge.",
-        tools=[PriorAuthTool()],
-        llm=model, verbose=False
-    )
-    care_coordinator = Agent(
-        role="Care Gap Coordinator",
-        goal="Identify preventive care gaps with guideline citations.",
-        backstory="Care coordinator translating guidelines into action items.",
-        tools=[CareGapTool()],
-        llm=model, verbose=False
+    # Step 1: Knowledge graph risk analysis (zero LLM tokens)
+    kg_summary = ""
+    try:
+        from tools.ehr_tools import get_patient_demographics, get_lab_results
+        from knowledge_graph.clinical_graph import find_risks_for_patient, format_findings_for_agent
+        demo = get_patient_demographics.invoke({"patient_id": patient_id})
+        meds = demo.get("medications", [])
+        dxs  = demo.get("diagnoses", [])
+        age  = demo.get("age", 0)
+        findings = find_risks_for_patient(diagnoses=dxs, lab_values={},
+                                          medications=meds, age=age)
+        kg_summary = format_findings_for_agent(findings, max_findings=6)
+        print(f"  [MODERATE] KG: {len(findings)} findings")
+    except Exception as e:
+        print(f"  [MODERATE] KG error: {e}")
+
+    # Step 2: Care gap via LangGraph
+    print(f"  [MODERATE] Running care gap agent...")
+    care_summary = ""
+    try:
+        from agents.care_gap_agent import run_care_gap_review
+        time.sleep(2)
+        care_result = _run_with_timeout(
+            run_care_gap_review, args=(patient_id,), timeout_seconds=150,
+            fallback={"final_report": "Care gap timed out.", "steps_executed": 0}
+        )
+        care_summary = care_result.get("final_report", "")[:1000]
+        print(f"  [MODERATE] Care gap: {care_result.get('steps_executed', 0)} steps")
+    except Exception as e:
+        print(f"  [MODERATE] Care gap error: {e}")
+
+    # Step 4: Prior auth via LangGraph (with Agent/Critic)
+    # Note: rate limits are now handled automatically by llm_invoke retry logic.
+    print(f"  [MODERATE] Running prior auth agent...")
+    auth_results = []
+    try:
+        from agents.prior_auth_agent import run_prior_auth
+        from tools.ehr_tools import get_pending_auth_requests
+        pending = get_pending_auth_requests.invoke({"patient_id": patient_id})
+        for req in (pending or [])[:2]:
+            if isinstance(req, dict) and "request_id" in req:
+                # Retry loop specifically for rate limit errors on auth start
+                auth_r = None
+                for attempt in range(3):
+                    try:
+                        auth_r = _run_with_timeout(
+                            run_prior_auth,
+                            args=(patient_id, req["request_id"], req["item"]),
+                            timeout_seconds=200,
+                            fallback={
+                                "patient_id": patient_id,
+                                "request_id": req["request_id"],
+                                "item": req["item"],
+                                "decision": "ESCALATE",
+                                "confidence": 0.5,
+                                "justification": "Auth timed out — escalating for manual review",
+                                "critic_reviewed": False,
+                                "was_revised": False
+                            }
+                        )
+                        break
+                    except Exception as e:
+                        if "429" in str(e) or "rate_limit" in str(e).lower():
+                            wait = 20 * (attempt + 1)
+                            print(f"  [MODERATE] Auth 429 — waiting {wait}s (attempt {attempt+1}/3)")
+                            time.sleep(wait)
+                        else:
+                            raise
+                if auth_r:
+                    auth_results.append(auth_r)
+                    print(f"  [MODERATE] Auth: {auth_r.get('decision')} ({auth_r.get('confidence',0):.0%})")
+                time.sleep(5)
+    except Exception as e:
+        print(f"  [MODERATE] Auth error: {e}")
+
+    import json as _json
+    crew_output = (
+        f"MODERATE pathway completed for patient {patient_id}.\n\n"
+        f"KNOWLEDGE GRAPH:\n{kg_summary[:400]}\n\n"
+        f"CARE GAPS:\n{care_summary[:400]}\n\n"
+        f"PRIOR AUTH:\n{_json.dumps(auth_results, indent=2)[:400]}"
     )
 
-    crew = Crew(
-        agents=[risk_assessor, auth_coordinator, care_coordinator],
-        tasks=[
-            Task(
-                description=f"Score risk and identify priority workflows for patient {patient_id}.",
-                expected_output="Risk tier, contributing factors, workflow recommendation.",
-                agent=risk_assessor
-            ),
-            Task(
-                description=f"Process prior auth requests for patient {patient_id}.",
-                expected_output="Auth decisions with confidence and justification.",
-                agent=auth_coordinator
-            ),
-            Task(
-                description=f"Care gap review for patient {patient_id}.",
-                expected_output="Prioritized care gaps with guideline citations.",
-                agent=care_coordinator
-            )
-        ],
-        process=Process.sequential,
-        verbose=False
-    )
-    time.sleep(3)
-    result = crew.kickoff()
-    return {"pathway": "MODERATE", "workflow": "crewai_mdt", "crew_output": str(result)}
+    return {
+        "pathway": "MODERATE",
+        "workflow": "sequential_mdt",
+        "auth_results": auth_results,
+        "care_summary": care_summary,
+        "crew_output": crew_output
+    }
 
 
 def _run_high_complexity(patient_id: str) -> dict:
@@ -331,9 +421,12 @@ def _run_high_complexity(patient_id: str) -> dict:
     try:
         from agents.care_gap_agent import run_care_gap_review
         time.sleep(3)
-        care_result = run_care_gap_review(patient_id)
+        care_result = _run_with_timeout(
+            run_care_gap_review, args=(patient_id,), timeout_seconds=150,
+            fallback={"final_report": "Care gap timed out — check audit log.", "steps_executed": 0}
+        )
         care_summary = care_result.get("final_report", "")[:1000]
-        print(f"  [HIGH] Care gap: {care_result['steps_executed']} steps")
+        print(f"  [HIGH] Care gap: {care_result.get('steps_executed', 0)} steps")
     except Exception as e:
         print(f"  [HIGH] Care gap error: {e}")
 
@@ -347,7 +440,21 @@ def _run_high_complexity(patient_id: str) -> dict:
         time.sleep(5)
         for req in (pending or [])[:2]:
             if isinstance(req, dict) and "request_id" in req:
-                auth_r = run_prior_auth(patient_id, req["request_id"], req["item"])
+                auth_r = _run_with_timeout(
+                    run_prior_auth,
+                    args=(patient_id, req["request_id"], req["item"]),
+                    timeout_seconds=200,
+                    fallback={
+                        "patient_id": patient_id,
+                        "request_id": req["request_id"],
+                        "item": req["item"],
+                        "decision": "ESCALATE",
+                        "confidence": 0.5,
+                        "justification": "Auth timed out — escalating for manual review",
+                        "critic_reviewed": False,
+                        "was_revised": False
+                    }
+                )
                 auth_results.append(auth_r)
                 print(f"  [HIGH] Auth: {auth_r.get('decision')} ({auth_r.get('confidence',0):.0%})")
                 time.sleep(3)

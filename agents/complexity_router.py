@@ -28,6 +28,7 @@ import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from utils.llm_utils import llm_invoke
 
 load_dotenv()
 
@@ -186,7 +187,7 @@ Respond with ONLY a JSON object:
 """
 
     try:
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = llm_invoke(llm, [HumanMessage(content=prompt)])
         import json, re
         match = re.search(r'\{.*?\}', response.content, re.DOTALL)
         if match:

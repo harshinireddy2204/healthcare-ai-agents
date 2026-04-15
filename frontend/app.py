@@ -246,23 +246,18 @@ if page == "🏠 Live Overview":
                     if drug_report.get("fda_findings_count", 0) > 0:
                         st.caption(f"OpenFDA: {drug_report['fda_findings_count']} drug label findings")
 
-                # Care gap report
-                if mode == "care_gap_only":
-                    report = result.get("final_report", "")
-                    if report:
-                        st.markdown("**📋 Care Gap Report:**")
-                        with st.container(border=True):
-                            st.markdown(report)
-
-                # Full mode — show care gap from workflow_results
-                if mode == "full":
-                    wf = result.get("workflow_results", {})
-                    care_report = (wf.get("care_gaps", {}).get("final_report", "") or
-                                   result.get("care_summary", ""))
-                    if care_report:
-                        st.markdown("**📋 Care Gap Report:**")
-                        with st.container(border=True):
-                            st.markdown(care_report)
+                # Care gap report — works for care_gap_only AND full/moderate pathway
+                wf = result.get("workflow_results", {})
+                care_report = (
+                    result.get("final_report") or
+                    wf.get("care_gaps", {}).get("final_report") or
+                    wf.get("care_summary") or
+                    result.get("care_summary") or ""
+                )
+                if care_report and mode in ("care_gap_only", "full"):
+                    st.markdown("**📋 Care Gap Report:**")
+                    with st.container(border=True):
+                        st.markdown(care_report)
 
                 # Auth results
                 auth_results = (result.get("auth_results") or
