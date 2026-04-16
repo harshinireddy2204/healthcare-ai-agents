@@ -318,7 +318,7 @@ def _run_moderate_complexity(patient_id: str) -> dict:
                         auth_r = _run_with_timeout(
                             run_prior_auth,
                             args=(patient_id, req["request_id"], req["item"]),
-                            timeout_seconds=200,
+                            timeout_seconds=300,
                             fallback={
                                 "patient_id": patient_id,
                                 "request_id": req["request_id"],
@@ -443,7 +443,7 @@ def _run_high_complexity(patient_id: str) -> dict:
                 auth_r = _run_with_timeout(
                     run_prior_auth,
                     args=(patient_id, req["request_id"], req["item"]),
-                    timeout_seconds=200,
+                    timeout_seconds=300,
                     fallback={
                         "patient_id": patient_id,
                         "request_id": req["request_id"],

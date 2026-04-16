@@ -25,11 +25,26 @@ _BASE_WAIT_S  = 5   # seconds for first retry when no header is available
 
 
 def _parse_retry_seconds(err: openai.RateLimitError) -> float | None:
-    """Extract the suggested wait time from an OpenAI 429 error message."""
+    """Extract the suggested wait time from an OpenAI 429 error message.
+
+    OpenAI returns one of these formats:
+      "Please try again in 1.378s"
+      "Please try again in 2m3s"
+      "Please try again in 45ms"
+    """
     msg = str(err)
+    # Minutes + seconds: "2m3s"
+    m = re.search(r"(\d+)m(\d+\.?\d*)s", msg, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) * 60 + float(m.group(2)) + 1.5
+    # Seconds only: "1.378s"
     m = re.search(r"try again in (\d+\.?\d*)s", msg, re.IGNORECASE)
     if m:
-        return float(m.group(1)) + 1.5   # add 1.5 s safety buffer
+        return float(m.group(1)) + 1.5
+    # Milliseconds: "450ms"
+    m = re.search(r"try again in (\d+)ms", msg, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) / 1000 + 1.5
     return None
 
 

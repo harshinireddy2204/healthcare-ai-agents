@@ -14,7 +14,7 @@ import os
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional  # noqa: F401 — kept for function signatures
 
 # ── Suppress all library noise before any imports ─────────────────────────────
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -43,9 +43,9 @@ CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 COLLECTION_NAME = "clinical_guidelines"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-_chroma_client: Optional[chromadb.PersistentClient] = None
+_chroma_client = None
 _collection = None
-_embedder: Optional[SentenceTransformer] = None
+_embedder = None
 
 
 def get_chroma():

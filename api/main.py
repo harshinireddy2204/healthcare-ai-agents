@@ -420,40 +420,69 @@ def search_guidelines(q: str, category: Optional[str] = None, n: int = 3):
 
 # ── Analytics endpoints ───────────────────────────────────────────────────────
 
+def _safe_analytics(fn, *args, fallback=None):
+    """Run an analytics function and return a fallback dict on any error."""
+    try:
+        return fn(*args)
+    except Exception as e:
+        print(f"[Analytics] {fn.__name__} error: {e}")
+        return fallback or {"error": str(e)}
+
+
 @app.get("/analytics/performance")
 def analytics_performance(days: int = 30):
     from analytics.queries import get_agent_performance_summary
-    return get_agent_performance_summary(days)
+    return _safe_analytics(get_agent_performance_summary, days, fallback={
+        "period_days": days, "total_runs": 0, "completed": 0,
+        "escalated_to_human": 0, "failed": 0, "unique_patients": 0,
+        "completion_rate": 0, "escalation_rate": 0, "automation_rate": 0
+    })
 
 
 @app.get("/analytics/prior-auth")
 def analytics_prior_auth(days: int = 30):
     from analytics.queries import get_prior_auth_metrics
-    return get_prior_auth_metrics(days)
+    return _safe_analytics(get_prior_auth_metrics, days, fallback={
+        "total_auth_requests": 0, "decisions": {"APPROVE": 0, "DENY": 0, "ESCALATE": 0},
+        "approval_rate": 0, "escalation_rate": 0, "avg_confidence": 0,
+        "critic_reviewed": 0, "agent_revised": 0, "revision_rate": 0
+    })
 
 
 @app.get("/analytics/care-gaps")
 def analytics_care_gaps(days: int = 30):
     from analytics.queries import get_care_gap_metrics
-    return get_care_gap_metrics(days)
+    return _safe_analytics(get_care_gap_metrics, days, fallback={
+        "patients_analyzed": 0, "patients_with_gaps": 0,
+        "total_gaps_identified": 0, "avg_gaps_per_patient": 0, "gap_frequency": []
+    })
 
 
 @app.get("/analytics/complexity")
 def analytics_complexity(days: int = 30):
     from analytics.queries import get_complexity_distribution
-    return get_complexity_distribution(days)
+    return _safe_analytics(get_complexity_distribution, days, fallback={
+        "distribution": {"LOW": 0, "MODERATE": 0, "HIGH": 0},
+        "pct_low": 0, "pct_moderate": 0, "pct_high": 0,
+        "estimated_tokens_used": 0, "estimated_tokens_saved": 0,
+        "estimated_cost_savings_pct": 0
+    })
 
 
 @app.get("/analytics/cohorts")
 def analytics_cohorts():
     from analytics.queries import get_patient_cohort_analysis
-    return get_patient_cohort_analysis()
+    return _safe_analytics(get_patient_cohort_analysis, fallback=[])
 
 
 @app.get("/analytics/sla")
 def analytics_sla():
     from analytics.queries import get_review_queue_sla_metrics
-    return get_review_queue_sla_metrics()
+    return _safe_analytics(get_review_queue_sla_metrics, fallback={
+        "total_cases": 0, "resolved": 0, "pending": 0,
+        "resolution_rate": 0, "avg_review_time_hours": 0,
+        "resolution_breakdown": {}, "sla_target_hours": 4, "sla_met_pct": 0
+    })
 
 
 @app.post("/analytics/data-quality")

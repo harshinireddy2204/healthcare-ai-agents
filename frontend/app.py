@@ -671,15 +671,23 @@ elif page == "📈 Analytics & Reporting":
     )
 
     try:
-        def _api_get(path: str, params: dict = None):
-            r = requests.get(f"{API_BASE}{path}", params=params, timeout=15)
-            r.raise_for_status()
-            return r.json()
+        def _api_get(path: str, params: dict = None, fallback=None):
+            try:
+                r = requests.get(f"{API_BASE}{path}", params=params, timeout=15)
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                st.warning(f"Analytics unavailable ({path}): {e}")
+                return fallback if fallback is not None else {}
 
         def _api_post(path: str):
-            r = requests.post(f"{API_BASE}{path}", timeout=30)
-            r.raise_for_status()
-            return r.json()
+            try:
+                r = requests.post(f"{API_BASE}{path}", timeout=30)
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                st.warning(f"Request failed ({path}): {e}")
+                return {}
 
         tab_ops, tab_auth, tab_gaps, tab_cohorts, tab_dq = st.tabs([
             "📊 Operations",
@@ -692,7 +700,9 @@ elif page == "📈 Analytics & Reporting":
         # ── Operations tab ─────────────────────────────────────────────────────
         with tab_ops:
             st.markdown("#### Agent Performance — Last 30 Days")
-            perf = _api_get("/analytics/performance", {"days": 30})
+            perf = _api_get("/analytics/performance", {"days": 30}, fallback={
+                "total_runs": 0, "completed": 0, "escalated_to_human": 0,
+                "automation_rate": 0, "unique_patients": 0})
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Total Runs", perf["total_runs"])
             c2.metric("Completed", perf["completed"])
@@ -714,7 +724,9 @@ elif page == "📈 Analytics & Reporting":
                     f"of token costs vs running full ICT on every patient."
                 )
 
-            sla = _api_get("/analytics/sla")
+            sla = _api_get("/analytics/sla", fallback={
+                "total_cases": 0, "resolved": 0,
+                "avg_review_time_hours": 0, "sla_met_pct": 0})
             st.markdown("---")
             st.markdown("#### HITL Review Queue SLA")
             s1, s2, s3, s4 = st.columns(4)
