@@ -35,24 +35,21 @@ logging.getLogger("httpx").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────────────────────────────────────
 
-import chromadb
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer, CrossEncoder
 from langchain_core.tools import tool
 from dotenv import load_dotenv
 from pathlib import Path
+
+# chromadb, sentence_transformers, and torch are imported LAZILY inside
+# _get_collection() / _get_embedder() / _get_reranker() to avoid loading
+# ~800MB of ML libraries at import time and OOMing Railway free-tier workers.
 
 load_dotenv()
 
 CHROMA_DIR = Path(__file__).parent.parent / "data" / "chroma_guidelines"
 COLLECTION_NAME = "clinical_guidelines"
 
-# Primary embedding model — same as embedder.py (must match!)
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-# Cross-encoder reranker — reads query+document together, much more accurate
-# than cosine similarity alone. Downloads ~85MB once, then cached.
-RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_MODEL    = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 _client = None
 _collection = None
@@ -151,6 +148,8 @@ def expand_query(query: str) -> str:
 def _get_collection():
     global _client, _collection
     if _collection is None:
+        import chromadb
+        from chromadb.config import Settings
         _client = chromadb.PersistentClient(
             path=str(CHROMA_DIR),
             settings=Settings(anonymized_telemetry=False)
@@ -162,18 +161,20 @@ def _get_collection():
     return _collection
 
 
-def _get_embedder() -> SentenceTransformer:
+def _get_embedder():
     global _embedder
     if _embedder is None:
+        from sentence_transformers import SentenceTransformer
         _embedder = SentenceTransformer(EMBEDDING_MODEL)
     return _embedder
 
 
-def _get_reranker() -> CrossEncoder:
+def _get_reranker():
     global _reranker
     if _reranker is None:
         with _model_lock:
-            if _reranker is None:  # double-check after acquiring lock
+            if _reranker is None:
+                from sentence_transformers import CrossEncoder
                 _reranker = CrossEncoder(RERANK_MODEL)
     return _reranker
 

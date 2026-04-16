@@ -31,9 +31,8 @@ logging.getLogger("httpx").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────────────────────────────────────
 
-import chromadb
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+# chromadb and sentence_transformers imported lazily inside get_chroma() /
+# get_embedder() — avoids loading ~800MB of ML libraries at import time.
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -52,6 +51,8 @@ _embedder: Optional[SentenceTransformer] = None
 def get_chroma():
     global _chroma_client, _collection
     if _chroma_client is None:
+        import chromadb
+        from chromadb.config import Settings
         _chroma_client = chromadb.PersistentClient(
             path=str(CHROMA_DIR),
             settings=Settings(anonymized_telemetry=False)
@@ -63,9 +64,10 @@ def get_chroma():
     return _chroma_client, _collection
 
 
-def get_embedder() -> SentenceTransformer:
+def get_embedder():
     global _embedder
     if _embedder is None:
+        from sentence_transformers import SentenceTransformer
         print(f"[Embedder] Loading model: {EMBEDDING_MODEL}")
         _embedder = SentenceTransformer(EMBEDDING_MODEL)
     return _embedder
