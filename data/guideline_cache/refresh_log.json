@@ -1,5 +1,396 @@
 [
   {
+    "timestamp": "2026-04-16T22:34:11.898231",
+    "mode": "manual_full",
+    "triggered_by": "dashboard_manual",
+    "sources_embedded": 58,
+    "sources_unchanged": 0,
+    "sources_skipped": 5,
+    "total_chunks": 699,
+    "total_sources": 62,
+    "validation": "PASS",
+    "embed_details": [
+      {
+        "source_id": "uspstf_breast_cancer",
+        "status": "embedded",
+        "chunks_embedded": 41,
+        "scraped_at": "2026-04-16T22:31:18.236992"
+      },
+      {
+        "source_id": "uspstf_colorectal",
+        "status": "embedded",
+        "chunks_embedded": 35,
+        "scraped_at": "2026-04-16T22:31:20.590826"
+      },
+      {
+        "source_id": "uspstf_hypertension",
+        "status": "embedded",
+        "chunks_embedded": 18,
+        "scraped_at": "2026-04-16T22:31:22.978114"
+      },
+      {
+        "source_id": "uspstf_diabetes",
+        "status": "embedded",
+        "chunks_embedded": 22,
+        "scraped_at": "2026-04-16T22:31:25.215889"
+      },
+      {
+        "source_id": "uspstf_lung_cancer",
+        "status": "embedded",
+        "chunks_embedded": 28,
+        "scraped_at": "2026-04-16T22:31:27.322495"
+      },
+      {
+        "source_id": "uspstf_depression",
+        "status": "embedded",
+        "chunks_embedded": 21,
+        "scraped_at": "2026-04-16T22:31:29.632234"
+      },
+      {
+        "source_id": "uspstf_anxiety",
+        "status": "embedded",
+        "chunks_embedded": 22,
+        "scraped_at": "2026-04-16T22:31:31.786122"
+      },
+      {
+        "source_id": "uspstf_osteoporosis",
+        "status": "embedded",
+        "chunks_embedded": 33,
+        "scraped_at": "2026-04-16T22:31:34.182872"
+      },
+      {
+        "source_id": "uspstf_obesity",
+        "status": "embedded",
+        "chunks_embedded": 21,
+        "scraped_at": "2026-04-16T22:31:36.243766"
+      },
+      {
+        "source_id": "uspstf_cervical_cancer",
+        "status": "embedded",
+        "chunks_embedded": 35,
+        "scraped_at": "2026-04-16T22:31:38.314786"
+      },
+      {
+        "source_id": "uspstf_prostate_cancer",
+        "status": "embedded",
+        "chunks_embedded": 37,
+        "scraped_at": "2026-04-16T22:31:40.240864"
+      },
+      {
+        "source_id": "uspstf_alcohol",
+        "status": "embedded",
+        "chunks_embedded": 27,
+        "scraped_at": "2026-04-16T22:31:42.381303"
+      },
+      {
+        "source_id": "uspstf_tobacco",
+        "status": "embedded",
+        "chunks_embedded": 42,
+        "scraped_at": "2026-04-16T22:31:44.665230"
+      },
+      {
+        "source_id": "uspstf_falls_prevention",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_statin",
+        "status": "embedded",
+        "chunks_embedded": 24,
+        "scraped_at": "2026-04-16T22:31:47.579102"
+      },
+      {
+        "source_id": "cdc_adult_immunization_schedule",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:31:49.819967"
+      },
+      {
+        "source_id": "cdc_immunization_notes",
+        "status": "embedded",
+        "chunks_embedded": 20,
+        "scraped_at": "2026-04-16T22:31:51.748541"
+      },
+      {
+        "source_id": "cdc_flu_guidance",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "ada_standards_2025",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:31:54.388754"
+      },
+      {
+        "source_id": "niddk_diabetes_overview",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:31:59.161698"
+      },
+      {
+        "source_id": "niddk_diabetes_medicines",
+        "status": "embedded",
+        "chunks_embedded": 11,
+        "scraped_at": "2026-04-16T22:32:01.304658"
+      },
+      {
+        "source_id": "ada_ckd_diabetes",
+        "status": "embedded",
+        "chunks_embedded": 5,
+        "scraped_at": "2026-04-16T22:32:03.545569"
+      },
+      {
+        "source_id": "hedis_diabetes_measures",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:32:06.347847"
+      },
+      {
+        "source_id": "nhlbi_hypertension",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:32:08.319999"
+      },
+      {
+        "source_id": "nhlbi_hypertension_treatment",
+        "status": "embedded",
+        "chunks_embedded": 5,
+        "scraped_at": "2026-04-16T22:32:10.104716"
+      },
+      {
+        "source_id": "nhlbi_cholesterol",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:32:12.061902"
+      },
+      {
+        "source_id": "nhlbi_heart_failure",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:32:14.063955"
+      },
+      {
+        "source_id": "nhlbi_coronary_artery",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:32:16.241402"
+      },
+      {
+        "source_id": "nhlbi_afib",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:32:18.878177"
+      },
+      {
+        "source_id": "aha_cardiac_rehab",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:32:21.915601"
+      },
+      {
+        "source_id": "kdigo_ckd_2024",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:32:24.183471"
+      },
+      {
+        "source_id": "niddk_ckd_overview",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:32:26.166277"
+      },
+      {
+        "source_id": "niddk_kidney_failure",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:32:28.242824"
+      },
+      {
+        "source_id": "nci_breast_cancer_treatment",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:32:37.581863"
+      },
+      {
+        "source_id": "nci_prostate_cancer_treatment",
+        "status": "embedded",
+        "chunks_embedded": 24,
+        "scraped_at": "2026-04-16T22:32:39.786748"
+      },
+      {
+        "source_id": "nci_colorectal_treatment",
+        "status": "embedded",
+        "chunks_embedded": 20,
+        "scraped_at": "2026-04-16T22:32:42.220150"
+      },
+      {
+        "source_id": "nci_cancer_screening",
+        "status": "embedded",
+        "chunks_embedded": 14,
+        "scraped_at": "2026-04-16T22:32:44.548592"
+      },
+      {
+        "source_id": "nhlbi_copd",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:32:46.839997"
+      },
+      {
+        "source_id": "nhlbi_asthma",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:32:48.616628"
+      },
+      {
+        "source_id": "nhlbi_sleep_apnea",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:32:51.751743"
+      },
+      {
+        "source_id": "nimh_depression",
+        "status": "embedded",
+        "chunks_embedded": 6,
+        "scraped_at": "2026-04-16T22:32:53.825518"
+      },
+      {
+        "source_id": "nimh_anxiety",
+        "status": "embedded",
+        "chunks_embedded": 5,
+        "scraped_at": "2026-04-16T22:32:55.664490"
+      },
+      {
+        "source_id": "samhsa_substance_use",
+        "status": "embedded",
+        "chunks_embedded": 23,
+        "scraped_at": "2026-04-16T22:32:58.792910"
+      },
+      {
+        "source_id": "cdc_obesity_adult",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_obesity_guidelines",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:33:01.636770"
+      },
+      {
+        "source_id": "nia_older_adult_health",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nia_dementia",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:33:05.268245"
+      },
+      {
+        "source_id": "niams_rheumatoid_arthritis",
+        "status": "embedded",
+        "chunks_embedded": 5,
+        "scraped_at": "2026-04-16T22:33:07.034541"
+      },
+      {
+        "source_id": "niams_lupus",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:33:08.808468"
+      },
+      {
+        "source_id": "niams_osteoporosis",
+        "status": "embedded",
+        "chunks_embedded": 5,
+        "scraped_at": "2026-04-16T22:33:10.446749"
+      },
+      {
+        "source_id": "niams_osteoarthritis",
+        "status": "embedded",
+        "chunks_embedded": 3,
+        "scraped_at": "2026-04-16T22:33:12.066183"
+      },
+      {
+        "source_id": "nhlbi_stroke",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:33:14.001881"
+      },
+      {
+        "source_id": "ninds_parkinson",
+        "status": "embedded",
+        "chunks_embedded": 16,
+        "scraped_at": "2026-04-16T22:33:16.048222"
+      },
+      {
+        "source_id": "nhlbi_migraine",
+        "status": "embedded",
+        "chunks_embedded": 11,
+        "scraped_at": "2026-04-16T22:33:17.942803"
+      },
+      {
+        "source_id": "nichd_pcos",
+        "status": "embedded",
+        "chunks_embedded": 7,
+        "scraped_at": "2026-04-16T22:33:20.332605"
+      },
+      {
+        "source_id": "nichd_thyroid",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "cdc_antibiotic_stewardship",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:33:22.928549"
+      },
+      {
+        "source_id": "cdc_hiv_prevention",
+        "status": "embedded",
+        "chunks_embedded": 2,
+        "scraped_at": "2026-04-16T22:33:25.151268"
+      },
+      {
+        "source_id": "niddk_crohns",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:33:27.561148"
+      },
+      {
+        "source_id": "niddk_ibs",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:33:29.217482"
+      },
+      {
+        "source_id": "hedis_colorectal_screening",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:33:31.732376"
+      },
+      {
+        "source_id": "hedis_cardiovascular",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:33:34.329328"
+      },
+      {
+        "source_id": "hedis_mental_health",
+        "status": "embedded",
+        "chunks_embedded": 4,
+        "scraped_at": "2026-04-16T22:33:37.118153"
+      }
+    ]
+  },
+  {
     "timestamp": "2026-04-08T18:05:32.361222",
     "mode": "manual_full",
     "triggered_by": "cli",

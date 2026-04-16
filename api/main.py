@@ -62,20 +62,7 @@ def init_db():
 @app.on_event("startup")
 def on_startup():
     init_db()
-    # Seed guidelines KB in background if store is empty (first deploy)
-    import threading
-    def _seed_guidelines():
-        try:
-            from rag.embedder import get_collection_stats
-            stats = get_collection_stats()
-            if stats.get("total_chunks", 0) == 0:
-                print("[Startup] Guidelines store empty — seeding in background...")
-                from rag.refresh_flow import manual_refresh_flow
-                manual_refresh_flow(source_ids=None, force=False, triggered_by="startup")
-                print("[Startup] Guidelines seeding complete.")
-        except Exception as e:
-            print(f"[Startup] Guidelines seed skipped: {e}")
-    threading.Thread(target=_seed_guidelines, daemon=True).start()
+    print("[Startup] API ready. Use POST /refresh-guidelines to populate the guidelines KB.")
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
