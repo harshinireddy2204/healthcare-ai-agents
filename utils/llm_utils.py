@@ -71,9 +71,15 @@ def llm_invoke(llm, messages):
         except openai.RateLimitError as e:
             if attempt == _MAX_ATTEMPTS - 1:
                 raise
-            wait = _parse_retry_seconds(e) or min(_BASE_WAIT_S * (2 ** attempt), 60)
+            parsed = _parse_retry_seconds(e)
+            # Minimum 15s per retry — short waits (1-3s) are useless when the
+            # full TPM window is depleted by a previous care gap / large agent run.
+            # 15s refills ~50k tokens at gpt-4o-mini's 200k TPM rate, enough for
+            # one full prior-auth call.
+            wait = max(parsed or 0, 15 * (attempt + 1))
+            wait = min(wait, 90)   # cap at 90s
             print(
-                f"  [RateLimit] 429 — waiting {wait:.1f}s "
+                f"  [RateLimit] 429 — waiting {wait:.0f}s "
                 f"(attempt {attempt + 1}/{_MAX_ATTEMPTS - 1})"
             )
             time.sleep(wait)

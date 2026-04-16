@@ -153,11 +153,12 @@ def render_crew_output(crew: str):
     import json as _json
 
     # Split into named sections
+    _SECTION_HEADERS = {"KNOWLEDGE GRAPH:", "CARE GAPS:", "PRIOR AUTH:", "SYNTHESIS:"}
     sections = {}
     current_key = "header"
     current_lines = []
     for line in crew.split("\n"):
-        if line.strip() in ("KNOWLEDGE GRAPH:", "CARE GAPS:", "PRIOR AUTH:"):
+        if line.strip() in _SECTION_HEADERS:
             sections[current_key] = "\n".join(current_lines).strip()
             current_key = line.strip().rstrip(":")
             current_lines = []
@@ -221,8 +222,17 @@ def render_crew_output(crew: str):
 
                 getattr(st, color)(justification)
                 st.markdown("---")
-    elif "No pending" not in auth_raw and auth_raw.strip():
+    elif auth_raw.strip() in ("[]", "", "null") or "No pending" in auth_raw:
+        st.info("No pending authorization requests for this patient.")
+    else:
+        # Non-JSON fallback: show the raw text (e.g. timed-out explanation)
         st.markdown(f"**Prior Auth:** {auth_raw}")
+
+    # ── HIGH pathway synthesis ─────────────────────────────────────────────────
+    synthesis = sections.get("SYNTHESIS", "")
+    if synthesis:
+        with st.expander("🏥 ICT Clinical Synthesis", expanded=False):
+            st.markdown(synthesis)
 
 
 # ── Page: Live Overview ────────────────────────────────────────────────────────

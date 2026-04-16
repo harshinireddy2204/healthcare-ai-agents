@@ -248,7 +248,7 @@ def _run_low_complexity(patient_id: str, profile: dict) -> dict:
     import json as _json
     care_section = results.get("care_gaps", {})
     care_text = care_section.get("final_report", care_section.get("error", "Not available"))
-    auth_text = _json.dumps(results.get("auth_results", []), indent=2) if results.get("auth_results") else "No pending auth requests"
+    auth_text = _json.dumps(results.get("auth_results", []), indent=2) if results.get("auth_results") else "No pending authorization requests for this patient."
     results["crew_output"] = (
         f"LOW pathway completed for patient {patient_id}.\n\n"
         f"CARE GAPS:\n{care_text}\n\n"
@@ -293,13 +293,20 @@ def _run_moderate_complexity(patient_id: str) -> dict:
         from agents.care_gap_agent import run_care_gap_review
         time.sleep(2)
         care_result = _run_with_timeout(
-            run_care_gap_review, args=(patient_id,), timeout_seconds=150,
+            run_care_gap_review, args=(patient_id,), timeout_seconds=180,
             fallback={"final_report": "Care gap timed out.", "steps_executed": 0}
         )
-        care_summary = care_result.get("final_report", "")[:1000]
+        care_summary = care_result.get("final_report", "")
         print(f"  [MODERATE] Care gap: {care_result.get('steps_executed', 0)} steps")
     except Exception as e:
         print(f"  [MODERATE] Care gap error: {e}")
+
+    # Wait 60s between care gap and prior auth so the TPM window partially refills.
+    # Care gap consumes ~190k/200k tokens; prior auth needs ~7-10k per call.
+    # Without this pause, prior auth hits 429 on every attempt and exhausts its
+    # 300s timeout before the graph can complete.
+    print(f"  [MODERATE] Pausing 60s to allow TPM bucket to refill before auth...")
+    time.sleep(60)
 
     # Step 4: Prior auth via LangGraph (with Agent/Critic)
     # Note: rate limits are now handled automatically by llm_invoke retry logic.
@@ -318,7 +325,7 @@ def _run_moderate_complexity(patient_id: str) -> dict:
                         auth_r = _run_with_timeout(
                             run_prior_auth,
                             args=(patient_id, req["request_id"], req["item"]),
-                            timeout_seconds=300,
+                            timeout_seconds=480,
                             fallback={
                                 "patient_id": patient_id,
                                 "request_id": req["request_id"],
@@ -346,11 +353,12 @@ def _run_moderate_complexity(patient_id: str) -> dict:
         print(f"  [MODERATE] Auth error: {e}")
 
     import json as _json
+    auth_text = _json.dumps(auth_results, indent=2)[:2000] if auth_results else "No pending authorization requests for this patient."
     crew_output = (
         f"MODERATE pathway completed for patient {patient_id}.\n\n"
         f"KNOWLEDGE GRAPH:\n{kg_summary[:800]}\n\n"
-        f"CARE GAPS:\n{care_summary[:3000]}\n\n"
-        f"PRIOR AUTH:\n{_json.dumps(auth_results, indent=2)[:1000]}"
+        f"CARE GAPS:\n{care_summary[:4000]}\n\n"
+        f"PRIOR AUTH:\n{auth_text}"
     )
 
     return {
@@ -422,10 +430,10 @@ def _run_high_complexity(patient_id: str) -> dict:
         from agents.care_gap_agent import run_care_gap_review
         time.sleep(3)
         care_result = _run_with_timeout(
-            run_care_gap_review, args=(patient_id,), timeout_seconds=150,
+            run_care_gap_review, args=(patient_id,), timeout_seconds=180,
             fallback={"final_report": "Care gap timed out — check audit log.", "steps_executed": 0}
         )
-        care_summary = care_result.get("final_report", "")[:1000]
+        care_summary = care_result.get("final_report", "")
         print(f"  [HIGH] Care gap: {care_result.get('steps_executed', 0)} steps")
     except Exception as e:
         print(f"  [HIGH] Care gap error: {e}")
@@ -437,13 +445,15 @@ def _run_high_complexity(patient_id: str) -> dict:
         from agents.prior_auth_agent import run_prior_auth
         from tools.ehr_tools import get_pending_auth_requests
         pending = get_pending_auth_requests.invoke({"patient_id": patient_id})
-        time.sleep(5)
+        # Same TPM refill pause as MODERATE — care gap exhausts the token budget
+        print(f"  [HIGH] Pausing 60s to allow TPM bucket to refill before auth...")
+        time.sleep(60)
         for req in (pending or [])[:2]:
             if isinstance(req, dict) and "request_id" in req:
                 auth_r = _run_with_timeout(
                     run_prior_auth,
                     args=(patient_id, req["request_id"], req["item"]),
-                    timeout_seconds=300,
+                    timeout_seconds=480,
                     fallback={
                         "patient_id": patient_id,
                         "request_id": req["request_id"],
@@ -463,12 +473,12 @@ def _run_high_complexity(patient_id: str) -> dict:
 
     # ── Step 4: Lean CrewAI synthesis ─────────────────────────────────────────
     print(f"  [HIGH] Synthesizing...")
-    auth_summary = _json.dumps(auth_results, indent=2)[:500] if auth_results else "No pending auth requests"
+    auth_summary = _json.dumps(auth_results, indent=2)[:2000] if auth_results else "No pending authorization requests for this patient."
     context = (
         f"Pre-computed analysis for patient {patient_id}:\n\n"
         f"DRUG SAFETY:\n{drug_summary}\n\n"
         f"KNOWLEDGE GRAPH:\n{kg_summary[:800]}\n\n"
-        f"CARE GAPS:\n{care_summary[:3000]}\n\n"
+        f"CARE GAPS:\n{care_summary[:4000]}\n\n"
         f"PRIOR AUTH:\n{auth_summary}"
     )
 
@@ -496,6 +506,17 @@ def _run_high_complexity(patient_id: str) -> dict:
     time.sleep(5)
     crew_result = crew.kickoff()
 
+    # Build crew_output in the same structured format as MODERATE so the
+    # frontend render_crew_output() can parse sections consistently.
+    high_auth_text = _json.dumps(auth_results, indent=2)[:2000] if auth_results else "No pending authorization requests for this patient."
+    crew_output = (
+        f"HIGH pathway completed for patient {patient_id}.\n\n"
+        f"KNOWLEDGE GRAPH:\n{kg_summary[:800]}\n\n"
+        f"CARE GAPS:\n{care_summary[:4000]}\n\n"
+        f"PRIOR AUTH:\n{high_auth_text}\n\n"
+        f"SYNTHESIS:\n{str(crew_result)}"
+    )
+
     return {
         "pathway": "HIGH",
         "workflow": "crewai_ict_precomputed",
@@ -506,7 +527,7 @@ def _run_high_complexity(patient_id: str) -> dict:
         },
         "auth_results": auth_results,
         "care_summary": care_summary,
-        "crew_output": str(crew_result)
+        "crew_output": crew_output
     }
 
 
