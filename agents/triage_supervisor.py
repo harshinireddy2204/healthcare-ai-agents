@@ -348,9 +348,9 @@ def _run_moderate_complexity(patient_id: str) -> dict:
     import json as _json
     crew_output = (
         f"MODERATE pathway completed for patient {patient_id}.\n\n"
-        f"KNOWLEDGE GRAPH:\n{kg_summary[:400]}\n\n"
-        f"CARE GAPS:\n{care_summary[:400]}\n\n"
-        f"PRIOR AUTH:\n{_json.dumps(auth_results, indent=2)[:400]}"
+        f"KNOWLEDGE GRAPH:\n{kg_summary[:800]}\n\n"
+        f"CARE GAPS:\n{care_summary[:3000]}\n\n"
+        f"PRIOR AUTH:\n{_json.dumps(auth_results, indent=2)[:1000]}"
     )
 
     return {
@@ -467,8 +467,8 @@ def _run_high_complexity(patient_id: str) -> dict:
     context = (
         f"Pre-computed analysis for patient {patient_id}:\n\n"
         f"DRUG SAFETY:\n{drug_summary}\n\n"
-        f"KNOWLEDGE GRAPH:\n{kg_summary[:600]}\n\n"
-        f"CARE GAPS:\n{care_summary[:400]}\n\n"
+        f"KNOWLEDGE GRAPH:\n{kg_summary[:800]}\n\n"
+        f"CARE GAPS:\n{care_summary[:3000]}\n\n"
         f"PRIOR AUTH:\n{auth_summary}"
     )
 
@@ -591,7 +591,7 @@ def _write_to_review_queue(patient_id: str, crew_output: str):
         """), {
             "pid": patient_id,
             "ts": datetime.utcnow().isoformat(),
-            "output": crew_output[:2000],
+            "output": crew_output[:6000],
             "reason": "Agent/Critic review flagged escalation"
         })
         conn.commit()
