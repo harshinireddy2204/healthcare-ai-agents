@@ -62,6 +62,12 @@ def llm_invoke(llm, messages):
     for attempt in range(_MAX_ATTEMPTS):
         try:
             return llm.invoke(messages)
+        except openai.AuthenticationError as e:
+            # Bad API key — retrying won't help, fail immediately with clear message
+            raise RuntimeError(
+                f"[LLM] Authentication failed — check OPENAI_API_KEY is set correctly. "
+                f"Original error: {e}"
+            ) from e
         except openai.RateLimitError as e:
             if attempt == _MAX_ATTEMPTS - 1:
                 raise
@@ -73,8 +79,13 @@ def llm_invoke(llm, messages):
             time.sleep(wait)
         except openai.APIConnectionError as e:
             if attempt == _MAX_ATTEMPTS - 1:
-                raise
-            wait = min(3 * (2 ** attempt), 30)   # 3 → 6 → 12 → 24 → 30 s
+                raise RuntimeError(
+                    f"[LLM] Cannot reach OpenAI after {_MAX_ATTEMPTS} attempts. "
+                    f"Check: (1) OPENAI_API_KEY is set in Railway Variables, "
+                    f"(2) account has credits at platform.openai.com/usage. "
+                    f"Original error: {e}"
+                ) from e
+            wait = min(3 * (2 ** attempt), 30)
             print(
                 f"  [ConnError] Connection error — waiting {wait}s "
                 f"(attempt {attempt + 1}/{_MAX_ATTEMPTS - 1}): {e}"
