@@ -143,6 +143,88 @@ with st.sidebar:
     st.caption("Research: MDAgents (NeurIPS'24), TxAgent, MALADE")
 
 
+# ── Structured crew output renderer ──────────────────────────────────────────
+
+def render_crew_output(crew: str):
+    """Parse crew_output into KG / Care Gaps / Prior Auth sections and render each."""
+    if not crew:
+        return
+
+    import json as _json
+
+    # Split into named sections
+    sections = {}
+    current_key = "header"
+    current_lines = []
+    for line in crew.split("\n"):
+        if line.strip() in ("KNOWLEDGE GRAPH:", "CARE GAPS:", "PRIOR AUTH:"):
+            sections[current_key] = "\n".join(current_lines).strip()
+            current_key = line.strip().rstrip(":")
+            current_lines = []
+        else:
+            current_lines.append(line)
+    sections[current_key] = "\n".join(current_lines).strip()
+
+    # ── Header (pathway + patient) ─────────────────────────────────────────────
+    header = sections.get("header", "")
+    if header:
+        st.caption(header)
+
+    # ── Knowledge Graph ────────────────────────────────────────────────────────
+    kg = sections.get("KNOWLEDGE GRAPH", "")
+    if kg:
+        with st.expander("🧠 Knowledge Graph Findings", expanded=True):
+            st.markdown(kg)
+
+    # ── Care Gaps ──────────────────────────────────────────────────────────────
+    care = sections.get("CARE GAPS", "")
+    if care:
+        with st.expander("📋 Care Gap Report", expanded=True):
+            # Colour-code priority lines
+            for line in care.split("\n"):
+                if "HIGH priority" in line:
+                    st.error(line)
+                elif "MEDIUM priority" in line:
+                    st.warning(line)
+                elif "LOW priority" in line:
+                    st.info(line)
+                elif line.startswith("Summary:"):
+                    st.success(line)
+                else:
+                    st.markdown(line)
+
+    # ── Prior Auth ─────────────────────────────────────────────────────────────
+    auth_raw = sections.get("PRIOR AUTH", "[]")
+    try:
+        auth_list = _json.loads(auth_raw) if auth_raw.strip().startswith("[") else []
+    except Exception:
+        auth_list = []
+
+    if auth_list:
+        with st.expander("🔐 Prior Authorization Decisions", expanded=True):
+            for r in auth_list:
+                decision = r.get("decision", "UNKNOWN")
+                confidence = r.get("confidence", 0)
+                item = r.get("item", "").replace("_", " ").title()
+                justification = r.get("justification", "")
+                critic = r.get("critic_reviewed", False)
+                revised = r.get("was_revised", False)
+
+                color = {"APPROVE": "success", "DENY": "error", "ESCALATE": "warning"}.get(decision, "info")
+                icon  = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "🔄")
+
+                cols = st.columns([2, 1, 1, 1])
+                cols[0].markdown(f"**{item}**")
+                cols[1].markdown(f"{icon} **{decision}**")
+                cols[2].metric("Confidence", f"{confidence:.0%}")
+                cols[3].markdown(f"{'🔍 Critic reviewed' if critic else ''} {'✏️ Revised' if revised else ''}")
+
+                getattr(st, color)(justification)
+                st.markdown("---")
+    elif "No pending" not in auth_raw and auth_raw.strip():
+        st.markdown(f"**Prior Auth:** {auth_raw}")
+
+
 # ── Page: Live Overview ────────────────────────────────────────────────────────
 
 if page == "🏠 Live Overview":
@@ -279,8 +361,7 @@ if page == "🏠 Live Overview":
                 if mode == "full" or "crew_output" in result:
                     crew = result.get("crew_output", "")
                     if crew:
-                        with st.expander("View full agent output"):
-                            st.markdown(crew[:1500])
+                        render_crew_output(crew)
 
                 if status == "FAILED":
                     st.error(f"Error: {result.get('error', 'Unknown')}")
@@ -651,11 +732,10 @@ elif page == "📊 Audit Log":
                 elif mode == "full" or "crew_output" in result:
                     tier_val = result.get("complexity_tier", "")
                     if tier_val:
-                        tier_colors = {"LOW": "normal", "MODERATE": "off", "HIGH": "inverse"}
                         st.markdown(f"**Complexity:** {tier_val} — {result.get('complexity_rationale', '')}")
                     crew = result.get("crew_output", "")
                     if crew:
-                        st.markdown(crew)
+                        render_crew_output(crew)
 
                 else:
                     st.json(result)
