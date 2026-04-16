@@ -141,12 +141,15 @@ def run_triage_background(patient_id: str, mode: str):
                 return fn(*args)
             except Exception as e:
                 err_str = str(e)
-                if "429" in err_str or "rate_limit" in err_str.lower():
+                is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower()
+                is_connection = "connection" in err_str.lower() or "APIConnectionError" in err_str
+                if is_rate_limit or is_connection:
                     wait = base_delay * (2 ** attempt)
-                    print(f"[Background] Rate limit hit — waiting {wait}s before retry {attempt+1}/{max_retries}")
+                    kind = "Rate limit" if is_rate_limit else "Connection error"
+                    print(f"[Background] {kind} — waiting {wait}s before retry {attempt+1}/{max_retries}")
                     time.sleep(wait)
                 else:
-                    raise  # non-rate-limit error, don't retry
+                    raise  # non-transient error, don't retry
         raise RuntimeError(f"Max retries exceeded for {patient_id}")
 
     try:

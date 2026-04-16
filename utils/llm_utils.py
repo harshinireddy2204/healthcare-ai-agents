@@ -50,7 +50,11 @@ def _parse_retry_seconds(err: openai.RateLimitError) -> float | None:
 
 def llm_invoke(llm, messages):
     """
-    Call llm.invoke(messages) with automatic retry on OpenAI rate limit errors.
+    Call llm.invoke(messages) with automatic retry on transient OpenAI errors.
+
+    Handles two error types:
+      - RateLimitError (429): waits the time OpenAI suggests, then retries
+      - APIConnectionError: brief backoff then retry (transient network drop)
 
     Waits the time suggested in the error response when available; otherwise
     uses exponential backoff (5 → 10 → 20 → 40 → 60 s).
@@ -60,10 +64,19 @@ def llm_invoke(llm, messages):
             return llm.invoke(messages)
         except openai.RateLimitError as e:
             if attempt == _MAX_ATTEMPTS - 1:
-                raise  # exhausted all retries
+                raise
             wait = _parse_retry_seconds(e) or min(_BASE_WAIT_S * (2 ** attempt), 60)
             print(
                 f"  [RateLimit] 429 — waiting {wait:.1f}s "
                 f"(attempt {attempt + 1}/{_MAX_ATTEMPTS - 1})"
+            )
+            time.sleep(wait)
+        except openai.APIConnectionError as e:
+            if attempt == _MAX_ATTEMPTS - 1:
+                raise
+            wait = min(3 * (2 ** attempt), 30)   # 3 → 6 → 12 → 24 → 30 s
+            print(
+                f"  [ConnError] Connection error — waiting {wait}s "
+                f"(attempt {attempt + 1}/{_MAX_ATTEMPTS - 1}): {e}"
             )
             time.sleep(wait)
