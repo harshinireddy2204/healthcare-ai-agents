@@ -105,6 +105,20 @@ def _seed_guidelines_if_empty():
 @app.on_event("startup")
 def on_startup():
     init_db()
+
+    # Validate OpenAI credentials immediately so bad configs fail loud
+    # instead of failing silently when the first user triggers a workflow.
+    try:
+        from utils.llm_utils import check_openai_credentials
+        cred_check = check_openai_credentials()
+        if cred_check["ok"]:
+            print(f"[Startup] ✅ {cred_check['message']}")
+        else:
+            print(f"[Startup] ⚠️  OpenAI credential check FAILED: {cred_check['message']}")
+            print(f"[Startup] ⚠️  Agent workflows will fail until this is fixed.")
+    except Exception as e:
+        print(f"[Startup] Could not validate OpenAI credentials: {e}")
+
     # Seed guidelines in background so startup isn't blocked
     import threading
     t = threading.Thread(target=_seed_guidelines_if_empty, daemon=True)
@@ -254,6 +268,68 @@ def health_check():
         "timestamp": datetime.utcnow().isoformat(),
         "version": "1.0.0"
     }
+
+
+@app.get("/diagnostics")
+def diagnostics():
+    """
+    Deep diagnostic check — validates OpenAI credentials and network access.
+    Use this from the frontend to debug "Connection error" issues without
+    needing Railway log access.
+    """
+    results = {"timestamp": datetime.utcnow().isoformat()}
+
+    # 1. OpenAI credentials
+    try:
+        from utils.llm_utils import check_openai_credentials
+        results["openai"] = check_openai_credentials()
+    except Exception as e:
+        results["openai"] = {"ok": False, "message": f"Check failed: {e}"}
+
+    # 2. Environment variables presence (without leaking values)
+    env_status = {}
+    for key in ["OPENAI_API_KEY", "MODEL_NAME", "DATABASE_URL", "LANGCHAIN_API_KEY", "USE_FHIR"]:
+        val = os.getenv(key, "")
+        if key == "OPENAI_API_KEY":
+            env_status[key] = f"set (length={len(val)}, starts with '{val[:3]}')" if val else "NOT SET"
+        elif key == "LANGCHAIN_API_KEY":
+            env_status[key] = "set" if val else "not set (optional)"
+        else:
+            env_status[key] = val or "not set"
+    results["environment"] = env_status
+
+    # 3. OpenFDA reachability (tests outbound HTTPS to public endpoint)
+    try:
+        import httpx
+        with httpx.Client(timeout=5) as client:
+            r = client.get("https://api.fda.gov/drug/label.json", params={"limit": 1})
+            results["openfda"] = {
+                "ok": r.status_code == 200,
+                "status_code": r.status_code,
+                "message": "OpenFDA API reachable" if r.status_code == 200 else f"HTTP {r.status_code}"
+            }
+    except Exception as e:
+        results["openfda"] = {"ok": False, "message": f"Cannot reach OpenFDA: {type(e).__name__}: {e}"}
+
+    # 4. ChromaDB / guidelines
+    try:
+        from rag.embedder import get_collection_stats
+        stats = get_collection_stats()
+        results["guidelines"] = {
+            "ok": stats.get("total_chunks", 0) > 0,
+            "total_chunks": stats.get("total_chunks", 0),
+            "total_sources": stats.get("total_sources", 0),
+        }
+    except Exception as e:
+        results["guidelines"] = {"ok": False, "message": f"ChromaDB error: {e}"}
+
+    # 5. Overall health
+    results["overall_ok"] = all([
+        results["openai"].get("ok", False),
+        results["openfda"].get("ok", False),
+    ])
+
+    return results
 
 
 @app.post("/process-patient", response_model=PatientSummary)

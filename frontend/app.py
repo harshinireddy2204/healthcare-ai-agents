@@ -1238,6 +1238,56 @@ elif page == "🔧 System Status":
         st.success(f"✅ API online — v{health.get('version')}")
     else:
         st.error("❌ API offline")
+        st.stop()
+
+    st.markdown("---")
+
+    # ── Deep diagnostics — catches 'Connection error' issues early ────────
+    st.markdown("### 🩺 Deep Diagnostics")
+    st.caption("Checks OpenAI connectivity, OpenFDA reachability, and knowledge base health")
+
+    if st.button("▶ Run diagnostics", type="primary"):
+        with st.spinner("Running diagnostics..."):
+            diag = api_get("/diagnostics", timeout=20)
+
+        if "_error" in diag:
+            st.error(f"Diagnostic check failed: {diag['_error']}")
+        else:
+            # OpenAI
+            openai_result = diag.get("openai", {})
+            if openai_result.get("ok"):
+                st.success(f"✅ **OpenAI:** {openai_result.get('message', 'OK')}")
+            else:
+                st.error(f"❌ **OpenAI:** {openai_result.get('message', 'Unknown error')}")
+                st.markdown("**How to fix:**")
+                st.markdown("""
+                1. Go to your Railway project → **Variables** tab
+                2. Verify `OPENAI_API_KEY` is set and starts with `sk-`
+                3. Check that the key has no leading/trailing whitespace (retype, don't paste)
+                4. Verify your OpenAI account has credits at [platform.openai.com/account/billing](https://platform.openai.com/account/billing)
+                5. Click **Deploy** to redeploy with the corrected variable
+                """)
+
+            # OpenFDA
+            fda_result = diag.get("openfda", {})
+            if fda_result.get("ok"):
+                st.success(f"✅ **OpenFDA:** {fda_result.get('message', 'OK')}")
+            else:
+                st.warning(f"⚠️ **OpenFDA:** {fda_result.get('message', 'Unknown')}")
+
+            # Guidelines
+            g_result = diag.get("guidelines", {})
+            if g_result.get("ok"):
+                st.success(f"✅ **Guidelines KB:** {g_result.get('total_chunks')} chunks loaded across {g_result.get('total_sources')} sources")
+            else:
+                st.info(f"ℹ️ **Guidelines KB:** Loading or empty — {g_result.get('message', '')}")
+
+            # Environment variables
+            st.markdown("**Environment Variables:**")
+            env = diag.get("environment", {})
+            for key, val in env.items():
+                icon = "✅" if val and val not in ("NOT SET", "not set") else "⚠️" if "optional" not in str(val) else "ℹ️"
+                st.markdown(f"- {icon} `{key}`: {val}")
 
     st.markdown("---")
     st.markdown("### Agent Stack Status")
