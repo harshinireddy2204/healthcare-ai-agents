@@ -2,17 +2,6 @@
 frontend/app.py
 
 Healthcare AI Multi-Agent System — Clinical Operations Dashboard
-
-Production-grade Streamlit UI showing the multi-agent system handling
-patients in real time. Features:
-  - Live agent activity feed (auto-refreshing)
-  - Complexity routing visualization (LOW/MODERATE/HIGH)
-  - Drug safety alerts with FDA citations
-  - Knowledge graph findings
-  - Prior auth with Agent/Critic review status
-  - Care gap reports with guideline citations
-  - HITL review queue with approve/reject/modify
-  - System health and RAG knowledge base status
 """
 import json
 import os
@@ -25,23 +14,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── API URL: reads from Streamlit secrets (cloud) or .env (local) ─────────────
-# On Streamlit Community Cloud: App Settings → Secrets → add API_BASE_URL
-# Locally: set API_BASE_URL in your .env file or leave as default
 def _get_api_base() -> str:
-    # Streamlit Cloud secrets take priority
     try:
         url = st.secrets.get("API_BASE_URL", "")
         if url:
             return url.rstrip("/")
     except Exception:
         pass
-    # Fall back to environment variable or localhost
     return os.getenv("API_BASE_URL", "http://localhost:8000")
 
 API_BASE = _get_api_base()
-
-# ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
     page_title="Healthcare AI — Multi-Agent Clinical Operations",
@@ -49,8 +31,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# ── Custom CSS ─────────────────────────────────────────────────────────────────
 
 st.markdown("""
 <style>
@@ -60,12 +40,6 @@ st.markdown("""
     padding: 14px 16px;
     border: 1px solid #2D3142;
     margin-bottom: 10px;
-}
-.agent-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 8px;
 }
 .complexity-low    { color: #1D9E75; font-weight: 600; }
 .complexity-mod    { color: #BA7517; font-weight: 600; }
@@ -113,35 +87,52 @@ with st.sidebar:
     else:
         st.error("⚫ API Offline")
 
-    # ── Auto-load guidelines on first visit if KB is empty ────────────────────
-    # Runs once per browser session (guarded by session_state). If the
-    # guidelines ChromaDB has zero chunks, trigger a background refresh so
-    # agents have RAG access without requiring a manual button click.
+    # ── Guidelines status check ───────────────────────────────────────────────
+    # Seeds embed automatically on API startup in a background thread.
+    # We check the status endpoint to show current state without triggering
+    # a manual load (which would re-scrape 63 URLs unnecessarily).
     if api_online and not st.session_state.get("_guidelines_checked"):
         st.session_state["_guidelines_checked"] = True
         try:
             g_status = api_get("/guidelines-status", timeout=5)
             chunks = g_status.get("collection", {}).get("total_chunks", 0)
-            if chunks == 0:
+            status_msg = g_status.get("status", "")
+
+            if chunks == 0 and "seeding" not in status_msg.lower():
+                # Seeds should have embedded at startup; if still empty after
+                # a few seconds, trigger a manual seed load via the refresh endpoint
                 r = api_post("/refresh-guidelines",
-                             {"source_ids": None, "force": False, "triggered_by": "auto_startup"})
+                             {"source_ids": None, "force": False, "triggered_by": "frontend_fallback"})
                 if "_error" not in r:
                     st.session_state["_guidelines_loading"] = True
         except Exception:
-            pass  # Non-critical — don't block the dashboard
+            pass
 
     if st.session_state.get("_guidelines_loading"):
-        # Check if it's done yet
         try:
             g_status = api_get("/guidelines-status", timeout=5)
             chunks = g_status.get("collection", {}).get("total_chunks", 0)
             if chunks > 0:
                 st.session_state["_guidelines_loading"] = False
-                st.success(f"📖 Guidelines loaded ({chunks} chunks)")
+                st.success(f"📖 Guidelines ready ({chunks} chunks)")
             else:
-                st.info("📖 Guidelines loading in background (~5 min)...")
+                st.info("📖 Guidelines loading (~60s on first deploy)...")
         except Exception:
             st.info("📖 Guidelines loading in background...")
+    elif api_online:
+        # Show quiet status for already-loaded guidelines
+        try:
+            g_status = api_get("/guidelines-status", timeout=3)
+            chunks = g_status.get("collection", {}).get("total_chunks", 0)
+            if chunks > 0:
+                seed_count = g_status.get("seed_sources_count", 0)
+                scraped_count = g_status.get("scraped_sources_count", 0)
+                if scraped_count > 0:
+                    st.caption(f"📖 {chunks} guideline chunks loaded")
+                else:
+                    st.caption(f"📖 {chunks} chunks (seed data) · [Full load →](#guidelines-kb)")
+        except Exception:
+            pass
 
     st.markdown("---")
     page = st.radio("Navigate", [
@@ -177,13 +168,12 @@ with st.sidebar:
 # ── Structured crew output renderer ──────────────────────────────────────────
 
 def render_crew_output(crew: str):
-    """Parse crew_output into KG / Care Gaps / Prior Auth sections and render each."""
+    """Parse crew_output into KG / Care Gaps / Prior Auth / Synthesis sections."""
     if not crew:
         return
 
     import json as _json
 
-    # Split into named sections
     _SECTION_HEADERS = {"KNOWLEDGE GRAPH:", "CARE GAPS:", "PRIOR AUTH:", "SYNTHESIS:"}
     sections = {}
     current_key = "header"
@@ -197,7 +187,6 @@ def render_crew_output(crew: str):
             current_lines.append(line)
     sections[current_key] = "\n".join(current_lines).strip()
 
-    # ── Header (pathway + patient) ─────────────────────────────────────────────
     header = sections.get("header", "")
     if header:
         st.caption(header)
@@ -212,7 +201,6 @@ def render_crew_output(crew: str):
     care = sections.get("CARE GAPS", "")
     if care:
         with st.expander("📋 Care Gap Report", expanded=True):
-            # Colour-code priority lines
             for line in care.split("\n"):
                 if "HIGH priority" in line:
                     st.error(line)
@@ -226,11 +214,14 @@ def render_crew_output(crew: str):
                     st.markdown(line)
 
     # ── Prior Auth ─────────────────────────────────────────────────────────────
-    auth_raw = sections.get("PRIOR AUTH", "[]")
-    try:
-        auth_list = _json.loads(auth_raw) if auth_raw.strip().startswith("[") else []
-    except Exception:
-        auth_list = []
+    auth_raw = sections.get("PRIOR AUTH", "")
+    auth_list = []
+    if auth_raw:
+        try:
+            if auth_raw.strip().startswith("["):
+                auth_list = _json.loads(auth_raw)
+        except Exception:
+            pass
 
     if auth_list:
         with st.expander("🔐 Prior Authorization Decisions", expanded=True):
@@ -253,11 +244,12 @@ def render_crew_output(crew: str):
 
                 getattr(st, color)(justification)
                 st.markdown("---")
-    elif auth_raw.strip() in ("[]", "", "null") or "No pending" in auth_raw:
-        st.info("No pending authorization requests for this patient.")
-    else:
-        # Non-JSON fallback: show the raw text (e.g. timed-out explanation)
-        st.markdown(f"**Prior Auth:** {auth_raw}")
+    elif auth_raw and auth_raw.strip() not in ("[]", "", "null") and "No pending" not in auth_raw:
+        with st.expander("🔐 Prior Authorization", expanded=True):
+            st.markdown(auth_raw)
+    elif not auth_list:
+        with st.expander("🔐 Prior Authorization", expanded=False):
+            st.info("No pending authorization requests for this patient.")
 
     # ── HIGH pathway synthesis ─────────────────────────────────────────────────
     synthesis = sections.get("SYNTHESIS", "")
@@ -266,11 +258,28 @@ def render_crew_output(crew: str):
             st.markdown(synthesis)
 
 
+def render_care_gap_report(report: str):
+    """Render a standalone care gap report with priority colour-coding."""
+    if not report:
+        st.info("No care gap report available.")
+        return
+    for line in report.split("\n"):
+        if "HIGH priority" in line:
+            st.error(line)
+        elif "MEDIUM priority" in line:
+            st.warning(line)
+        elif "LOW priority" in line:
+            st.info(line)
+        elif line.startswith("Summary:"):
+            st.success(line)
+        else:
+            st.markdown(line)
+
+
 # ── Page: Live Overview ────────────────────────────────────────────────────────
 
 if page == "🏠 Live Overview":
     st.title("🏠 Multi-Agent Clinical Operations — Live")
-    # Welcome banner for LinkedIn visitors
     st.info(
         "👋 **Welcome!** This is a live multi-agent clinical AI system — "
         "go to **⚡ Run Agent Workflow**, pick a patient, and trigger a workflow. "
@@ -280,9 +289,6 @@ if page == "🏠 Live Overview":
         icon=None
     )
 
-    st.markdown("Real-time view of the AI agent system processing patients.")
-
-    # Auto-refresh toggle
     col_r, col_i = st.columns([3, 1])
     with col_r:
         auto_refresh = st.checkbox("Auto-refresh every 15s", value=False)
@@ -294,7 +300,6 @@ if page == "🏠 Live Overview":
     entries = audit.get("entries", [])
     reviews = api_get("/pending-reviews").get("reviews", [])
 
-    # ── Summary metrics ────────────────────────────────────────────────────────
     total = len(entries)
     completed = sum(1 for e in entries if e["status"] == "COMPLETED")
     failed    = sum(1 for e in entries if e["status"] == "FAILED")
@@ -310,7 +315,6 @@ if page == "🏠 Live Overview":
 
     st.markdown("---")
 
-    # ── Complexity distribution ────────────────────────────────────────────────
     if entries:
         tiers = {"LOW": 0, "MODERATE": 0, "HIGH": 0, "UNKNOWN": 0}
         for e in entries:
@@ -325,7 +329,6 @@ if page == "🏠 Live Overview":
             c3.metric("🔴 HIGH (ICT + drug safety)", tiers["HIGH"])
             st.markdown("---")
 
-    # ── Live activity feed ─────────────────────────────────────────────────────
     st.markdown("#### 🔴 Live Agent Activity Feed")
 
     if not entries:
@@ -347,62 +350,71 @@ if page == "🏠 Live Overview":
                 f"{status_icon} Patient **{entry['patient_id']}** — {status} — {ts}",
                 expanded=(status == "PENDING_REVIEW")
             ):
-                # Mode + complexity row
                 info_cols = st.columns(4)
                 info_cols[0].markdown(f"**Mode:** `{mode}`")
                 if tier:
                     info_cols[1].markdown(f"**Complexity:** {tier_badge}", unsafe_allow_html=True)
                 if result.get("complexity_score") is not None:
                     info_cols[2].metric("Score", result["complexity_score"])
-                if result.get("workflow_results", {}).get("pathway"):
-                    info_cols[3].markdown(f"**Pathway:** `{result['workflow_results']['pathway']}`")
+                wf = result.get("workflow_results", {})
+                if wf.get("pathway"):
+                    info_cols[3].markdown(f"**Pathway:** `{wf['pathway']}`")
 
                 st.markdown("---")
 
-                # Drug safety alert
-                drug_report = (result.get("workflow_results", {}).get("drug_safety") or
-                               result.get("drug_safety"))
-                if drug_report:
-                    safety_tier = drug_report.get("safety_tier", "CAUTION")
-                    color = {"CRITICAL": "🔴", "WARNING": "🟠", "CAUTION": "🟡", "SAFE": "🟢"}.get(safety_tier, "🟡")
-                    st.markdown(f"**{color} Drug Safety: {safety_tier}**")
-                    if drug_report.get("fda_findings_count", 0) > 0:
-                        st.caption(f"OpenFDA: {drug_report['fda_findings_count']} drug label findings")
+                # Drug safety alert (full mode only)
+                if mode == "full":
+                    drug_report = wf.get("drug_safety") or result.get("drug_safety")
+                    if drug_report:
+                        safety_tier = drug_report.get("safety_tier", "CAUTION")
+                        color = {"CRITICAL": "🔴", "WARNING": "🟠", "CAUTION": "🟡", "SAFE": "🟢"}.get(safety_tier, "🟡")
+                        st.markdown(f"**{color} Drug Safety: {safety_tier}**")
+                        if drug_report.get("fda_findings_count", 0) > 0:
+                            st.caption(f"OpenFDA: {drug_report['fda_findings_count']} drug label findings")
 
-                # Care gap report — works for care_gap_only AND full/moderate pathway
-                wf = result.get("workflow_results", {})
-                care_report = (
-                    result.get("final_report") or
-                    wf.get("care_gaps", {}).get("final_report") or
-                    wf.get("care_summary") or
-                    result.get("care_summary") or ""
-                )
-                if care_report and mode in ("care_gap_only", "full"):
-                    st.markdown("**📋 Care Gap Report:**")
-                    with st.container(border=True):
-                        st.markdown(care_report)
+                # ── Care gap report — ONLY for care_gap_only mode ─────────────
+                # For full mode, care content is inside crew_output's CARE GAPS section
+                if mode == "care_gap_only":
+                    care_report = result.get("final_report", "")
+                    if care_report:
+                        st.markdown("**📋 Care Gap Report:**")
+                        with st.container(border=True):
+                            render_care_gap_report(care_report)
 
-                # Auth results
-                auth_results = (result.get("auth_results") or
-                                result.get("workflow_results", {}).get("auth_results", []))
-                if auth_results:
-                    st.markdown("**🔐 Prior Auth Results:**")
-                    for r in auth_results:
-                        decision = r.get("decision", "?")
-                        icon = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "❓")
-                        conf = r.get("confidence", 0)
-                        revised = "🔄 revised" if r.get("was_revised") else ""
-                        critic = "✓ critic reviewed" if r.get("critic_reviewed") else ""
-                        st.markdown(
-                            f"**{icon} {decision}** — `{r.get('item', '')}` — "
-                            f"{conf:.0%} confidence {revised} {critic}"
-                        )
+                # Auth results for auth_only mode
+                elif mode == "auth_only":
+                    auth_results = result.get("auth_results", [])
+                    if auth_results:
+                        st.markdown("**🔐 Prior Auth Results:**")
+                        for r in auth_results:
+                            decision = r.get("decision", "?")
+                            icon = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "❓")
+                            conf = r.get("confidence", 0)
+                            revised = "🔄 revised" if r.get("was_revised") else ""
+                            critic = "✓ critic reviewed" if r.get("critic_reviewed") else ""
+                            st.markdown(
+                                f"**{icon} {decision}** — `{r.get('item', '')}` — "
+                                f"{conf:.0%} confidence {revised} {critic}"
+                            )
 
-                # Full mode crew output
-                if mode == "full" or "crew_output" in result:
+                # Full mode — render structured crew output
+                elif mode == "full":
                     crew = result.get("crew_output", "")
                     if crew:
                         render_crew_output(crew)
+                    else:
+                        # Fallback: show whatever is available
+                        if wf.get("care_summary"):
+                            st.markdown("**📋 Care Summary:**")
+                            with st.container(border=True):
+                                render_care_gap_report(wf["care_summary"])
+                        auth_results = wf.get("auth_results", result.get("auth_results", []))
+                        if auth_results:
+                            st.markdown("**🔐 Auth Results:**")
+                            for r in auth_results:
+                                decision = r.get("decision", "?")
+                                icon = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "❓")
+                                st.markdown(f"**{icon} {decision}** — `{r.get('item', '')}` — {r.get('confidence', 0):.0%}")
 
                 if status == "FAILED":
                     st.error(f"Error: {result.get('error', 'Unknown')}")
@@ -422,7 +434,6 @@ elif page == "⚡ Run Agent Workflow":
         "🏥 FHIR R4 — Live Patients (hapi.fhir.org)"
     ])
 
-    # ── Tab 1: Synthetic patients ─────────────────────────────────────────────
     with tab_synthetic:
         st.markdown("20 clinically diverse synthetic patients — guaranteed data, no network dependency.")
 
@@ -478,7 +489,7 @@ elif page == "⚡ Run Agent Workflow":
         mode_descriptions = {
             "full": "Complexity router → LOW/MOD/HIGH pathway → all agents",
             "auth_only": "LangGraph ReAct + Agent/Critic review pattern (MALADE)",
-            "care_gap_only": "Plan-and-Execute + RAG over 63 clinical guidelines"
+            "care_gap_only": "Plan-and-Execute + RAG over clinical guidelines"
         }
         st.caption(f"ℹ️ {mode_descriptions[mode]}")
 
@@ -502,7 +513,6 @@ elif page == "⚡ Run Agent Workflow":
                 time.sleep(0.3)
             st.success("Batch triggered for all 20 patients.")
 
-    # ── Tab 2: FHIR R4 live patients ──────────────────────────────────────────
     with tab_fhir:
         st.markdown(
             "**Live FHIR R4 data** from `hapi.fhir.org/baseR4` — "
@@ -626,13 +636,11 @@ elif page == "⚡ Run Agent Workflow":
                                 name = mc.get("text") or (mc.get("coding", [{}])[0].get("display", "") if mc.get("coding") else "")
                                 st.markdown(f"- {name or 'Unknown'}")
 
-                        st.markdown("---")
                         st.info(
                             f"✅ Live FHIR R4 data from `{fhir_server}`. "
                             f"Set `USE_FHIR=true` and `FHIR_BASE_URL={fhir_server}` in `.env` "
                             f"to use FHIR ID `{fhir_id}` directly in agent workflows."
                         )
-                        st.code(f"USE_FHIR=true\nFHIR_BASE_URL={fhir_server}", language="bash")
 
                     except Exception as e:
                         st.error(f"FHIR fetch error: {e}")
@@ -649,7 +657,6 @@ elif page == "⚡ Run Agent Workflow":
 | `Immunization` | CVX codes | Vaccine history |
 | `ServiceRequest` | SNOMED | Prior auth requests |
 """)
-        st.caption("FHIR R4 is the healthcare industry standard adopted by Epic, Cerner, and major health systems.")
 
 
 # ── Page: Pending Reviews ─────────────────────────────────────────────────────
@@ -755,31 +762,67 @@ elif page == "📊 Audit Log":
                     c2.metric("Steps", result.get("steps_executed", "—"))
                     report = result.get("final_report", "")
                     if report:
-                        st.markdown(report)
+                        render_care_gap_report(report)
+                    else:
+                        st.info("Report not available.")
 
                 elif mode == "auth_only":
                     st.markdown("#### 🔐 Prior Auth Results")
-                    for r in result.get("auth_results", []):
-                        decision = r.get("decision", "?")
-                        icon = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "❓")
-                        st.markdown(f"**{icon} {decision}** — `{r.get('request_id')}` — `{r.get('item', '')}`")
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Confidence", f"{r.get('confidence', 0):.0%}")
-                        c2.metric("Critic reviewed", "✓" if r.get("critic_reviewed") else "—")
-                        c3.metric("Revised", "Yes" if r.get("was_revised") else "No")
-                        st.caption(r.get("justification", ""))
+                    auth_list = result.get("auth_results", [])
+                    if auth_list:
+                        for r in auth_list:
+                            decision = r.get("decision", "?")
+                            icon = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "❓")
+                            st.markdown(f"**{icon} {decision}** — `{r.get('request_id')}` — `{r.get('item', '')}`")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("Confidence", f"{r.get('confidence', 0):.0%}")
+                            c2.metric("Critic reviewed", "✓" if r.get("critic_reviewed") else "—")
+                            c3.metric("Revised", "Yes" if r.get("was_revised") else "No")
+                            st.caption(r.get("justification", ""))
+                            st.markdown("---")
+                    else:
+                        st.info("No auth results recorded.")
+
+                elif mode == "full":
+                    # Show complexity info
+                    if tier:
+                        score = result.get("complexity_score", "")
+                        rationale = result.get("complexity_rationale", "")
+                        st.markdown(f"**Complexity:** {tier} (score {score}) — {rationale}")
                         st.markdown("---")
 
-                elif mode == "full" or "crew_output" in result:
-                    tier_val = result.get("complexity_tier", "")
-                    if tier_val:
-                        st.markdown(f"**Complexity:** {tier_val} — {result.get('complexity_rationale', '')}")
                     crew = result.get("crew_output", "")
                     if crew:
                         render_crew_output(crew)
+                    else:
+                        # Graceful fallback for entries without crew_output
+                        wf = result.get("workflow_results", {})
+                        care = wf.get("care_summary") or wf.get("care_gaps", {}).get("final_report", "")
+                        auth_results = wf.get("auth_results", result.get("auth_results", []))
+
+                        if care:
+                            with st.expander("📋 Care Gap Report", expanded=True):
+                                render_care_gap_report(care)
+
+                        if auth_results:
+                            with st.expander("🔐 Prior Auth Results", expanded=True):
+                                for r in auth_results:
+                                    decision = r.get("decision", "?")
+                                    icon = {"APPROVE": "✅", "DENY": "❌", "ESCALATE": "⚠️"}.get(decision, "❓")
+                                    conf = r.get("confidence", 0)
+                                    st.markdown(f"**{icon} {decision}** — `{r.get('item', '')}` — {conf:.0%}")
+                                    st.caption(r.get("justification", ""))
+
+                        if not care and not auth_results:
+                            st.info("Processing in progress or results unavailable.")
+                            # Show raw result as collapsible JSON for debugging
+                            with st.expander("🔍 Raw result data", expanded=False):
+                                st.json(result)
 
                 else:
-                    st.json(result)
+                    # Unknown mode — show JSON
+                    with st.expander("🔍 Raw result data", expanded=False):
+                        st.json(result)
 
 
 # ── Page: Analytics & Reporting ──────────────────────────────────────────────
@@ -818,7 +861,6 @@ elif page == "📈 Analytics & Reporting":
             "✅ Data Quality"
         ])
 
-        # ── Operations tab ─────────────────────────────────────────────────────
         with tab_ops:
             st.markdown("#### Agent Performance — Last 30 Days")
             perf = _api_get("/analytics/performance", {"days": 30}, fallback={
@@ -835,9 +877,9 @@ elif page == "📈 Analytics & Reporting":
             comp = _api_get("/analytics/complexity", {"days": 30})
             st.markdown("#### MDAgents Complexity Routing Impact")
             col1, col2, col3 = st.columns(3)
-            col1.metric("🟢 LOW pathway", f"{comp['pct_low']}%", "single agent")
-            col2.metric("🟡 MODERATE pathway", f"{comp['pct_moderate']}%", "MDT team")
-            col3.metric("🔴 HIGH pathway", f"{comp['pct_high']}%", "full ICT")
+            col1.metric("🟢 LOW pathway", f"{comp.get('pct_low', 0)}%", "single agent")
+            col2.metric("🟡 MODERATE pathway", f"{comp.get('pct_moderate', 0)}%", "MDT team")
+            col3.metric("🔴 HIGH pathway", f"{comp.get('pct_high', 0)}%", "full ICT")
 
             if comp.get("estimated_cost_savings_pct", 0) > 0:
                 st.success(
@@ -856,18 +898,17 @@ elif page == "📈 Analytics & Reporting":
             s3.metric("Avg Review Time", f"{sla['avg_review_time_hours']}h")
             s4.metric("SLA Met (< 4h)", f"{sla['sla_met_pct']}%")
 
-        # ── Prior Auth tab ─────────────────────────────────────────────────────
         with tab_auth:
             st.markdown("#### Prior Authorization Metrics")
             auth = _api_get("/analytics/prior-auth", {"days": 30})
             a1, a2, a3, a4 = st.columns(4)
-            a1.metric("Total Requests", auth["total_auth_requests"])
-            a2.metric("Approval Rate", f"{auth['approval_rate']}%")
-            a3.metric("Escalation Rate", f"{auth['escalation_rate']}%")
-            a4.metric("Avg Confidence", f"{auth['avg_confidence']:.0%}")
+            a1.metric("Total Requests", auth.get("total_auth_requests", 0))
+            a2.metric("Approval Rate", f"{auth.get('approval_rate', 0)}%")
+            a3.metric("Escalation Rate", f"{auth.get('escalation_rate', 0)}%")
+            a4.metric("Avg Confidence", f"{auth.get('avg_confidence', 0):.0%}")
 
             st.markdown("---")
-            decisions = auth["decisions"]
+            decisions = auth.get("decisions", {})
             if any(decisions.values()):
                 import pandas as pd
                 df = pd.DataFrame([
@@ -877,22 +918,20 @@ elif page == "📈 Analytics & Reporting":
                 ])
                 st.dataframe(df, use_container_width=True, hide_index=True)
 
-            if auth["critic_reviewed"] > 0:
+            if auth.get("critic_reviewed", 0) > 0:
                 st.markdown("#### Agent/Critic Review Stats (MALADE pattern)")
                 cr1, cr2 = st.columns(2)
                 cr1.metric("Critic Reviewed", auth["critic_reviewed"])
-                cr2.metric("Decisions Revised", f"{auth['revision_rate']}%")
-                st.caption("Agent/Critic pattern: a critic agent reviews each decision before finalizing, improving accuracy by catching logical gaps.")
+                cr2.metric("Decisions Revised", f"{auth.get('revision_rate', 0)}%")
 
-        # ── Care Gaps tab ──────────────────────────────────────────────────────
         with tab_gaps:
             st.markdown("#### Care Gap Population Analysis")
             gaps = _api_get("/analytics/care-gaps", {"days": 30})
             g1, g2, g3, g4 = st.columns(4)
-            g1.metric("Patients Analyzed", gaps["patients_analyzed"])
-            g2.metric("With Gaps", gaps["patients_with_gaps"])
-            g3.metric("Total Gaps", gaps["total_gaps_identified"])
-            g4.metric("Avg Gaps/Patient", gaps["avg_gaps_per_patient"])
+            g1.metric("Patients Analyzed", gaps.get("patients_analyzed", 0))
+            g2.metric("With Gaps", gaps.get("patients_with_gaps", 0))
+            g3.metric("Total Gaps", gaps.get("total_gaps_identified", 0))
+            g4.metric("Avg Gaps/Patient", gaps.get("avg_gaps_per_patient", 0))
 
             st.markdown("---")
             st.markdown("#### Most Common Care Gaps")
@@ -902,8 +941,6 @@ elif page == "📈 Analytics & Reporting":
                 df = pd.DataFrame(gap_freq)
                 df.columns = ["Care Gap", "Patients Affected", "Population %"]
                 st.dataframe(df, use_container_width=True, hide_index=True)
-
-                # Simple bar chart
                 st.bar_chart(
                     {row["gap"]: row["count"] for row in gap_freq[:8]},
                     use_container_width=True
@@ -911,10 +948,8 @@ elif page == "📈 Analytics & Reporting":
             else:
                 st.info("Run care_gap_only workflows to populate this chart.")
 
-        # ── Patient Cohorts tab ────────────────────────────────────────────────
         with tab_cohorts:
             st.markdown("#### Patient Cohort Segmentation")
-            st.caption("SQL-powered cohort analysis — compatible with Snowflake / PostgreSQL / BigQuery")
             cohorts = _api_get("/analytics/cohorts")
             if cohorts:
                 import pandas as pd
@@ -922,7 +957,6 @@ elif page == "📈 Analytics & Reporting":
                 df["patient_ids"] = df["patient_ids"].apply(lambda x: ", ".join(x))
                 df.columns = ["Cohort", "Patients", "% of Population", "Patient IDs"]
                 st.dataframe(df, use_container_width=True, hide_index=True)
-
                 st.bar_chart(
                     {r["cohort"]: r["patient_count"] for r in cohorts},
                     use_container_width=True
@@ -932,7 +966,6 @@ elif page == "📈 Analytics & Reporting":
 
             st.markdown("---")
             st.markdown("**dbt model:** `dbt/models/marts/patient_care_gaps.sql`")
-            st.caption("Production SQL mart transforms agent outputs into HEDIS-reportable metrics.")
             with st.expander("View dbt SQL model"):
                 try:
                     sql = open("dbt/models/marts/patient_care_gaps.sql").read()
@@ -940,7 +973,6 @@ elif page == "📈 Analytics & Reporting":
                 except Exception:
                     st.caption("dbt/models/marts/patient_care_gaps.sql")
 
-        # ── Data Quality tab ───────────────────────────────────────────────────
         with tab_dq:
             st.markdown("#### Data Quality Framework")
             st.caption("Validates patient data before agents process it — catches bad data early in the pipeline.")
@@ -949,34 +981,27 @@ elif page == "📈 Analytics & Reporting":
                 with st.spinner("Running quality checks..."):
                     report = _api_post("/analytics/data-quality")
 
-                status_icon = "✅" if report["status"] == "PASS" else "❌"
-                st.markdown(f"### {status_icon} {report['summary']}")
+                if report:
+                    status_icon = "✅" if report.get("status") == "PASS" else "❌"
+                    st.markdown(f"### {status_icon} {report.get('summary', 'Check complete')}")
 
-                q1, q2, q3, q4 = st.columns(4)
-                q1.metric("Quality Score", f"{report['overall_quality_score']}%")
-                q2.metric("Checks Run", report["total_checks"])
-                q3.metric("Errors", report["total_errors"])
-                q4.metric("Warnings", report["total_warnings"])
+                    q1, q2, q3, q4 = st.columns(4)
+                    q1.metric("Quality Score", f"{report.get('overall_quality_score', 0)}%")
+                    q2.metric("Checks Run", report.get("total_checks", 0))
+                    q3.metric("Errors", report.get("total_errors", 0))
+                    q4.metric("Warnings", report.get("total_warnings", 0))
 
-                st.markdown("---")
-                failed = [r for r in report["patient_results"] if r["status"] == "FAIL"]
-                if failed:
-                    st.markdown("**Patients with errors:**")
-                    for r in failed:
-                        with st.expander(f"❌ {r['patient_id']} — score: {r['quality_score']}"):
-                            for err in r["errors"]:
-                                st.error(err["message"])
-                            for warn in r["warnings"]:
-                                st.warning(warn["message"])
-                else:
-                    st.success("All patients passed quality checks.")
-
-                st.markdown("**Quality rules applied:**")
-                rules = ["not_null (patient_id, age)", "age_in_range [0-120]",
-                         "valid_gender (M/F/O/U)", "lab_values physiologically plausible",
-                         "known_insurance_plan", "no_duplicate_patient_ids"]
-                for rule in rules:
-                    st.markdown(f"- `{rule}`")
+                    failed = [r for r in report.get("patient_results", []) if r["status"] == "FAIL"]
+                    if failed:
+                        st.markdown("**Patients with errors:**")
+                        for r in failed:
+                            with st.expander(f"❌ {r['patient_id']} — score: {r['quality_score']}"):
+                                for err in r["errors"]:
+                                    st.error(err["message"])
+                                for warn in r["warnings"]:
+                                    st.warning(warn["message"])
+                    else:
+                        st.success("All patients passed quality checks.")
 
     except ImportError as e:
         st.error(f"Analytics module not available: {e}")
@@ -1007,7 +1032,6 @@ elif page == "💊 Drug Safety":
 
     if col2.button("🔍 Run Drug Safety Check", type="primary"):
         with st.spinner(f"Querying OpenFDA for {selected}'s medications..."):
-            # Trigger via API
             result = api_post("/process-patient", {"patient_id": selected, "mode": "full"})
         if "_error" not in result:
             st.success("Drug safety check triggered — view results in Audit Log.")
@@ -1117,28 +1141,35 @@ elif page == "🧠 Knowledge Graph":
 
 elif page == "📚 Guidelines KB":
     st.title("📚 Clinical Guidelines Knowledge Base")
-    st.markdown("RAG over 63 clinical guidelines from USPSTF, ADA, AHA, KDIGO, NCI, CDC and more.")
+    st.markdown("RAG over clinical guidelines from USPSTF, ADA, AHA, KDIGO, NCI, CDC and more.")
 
     g_data = api_get("/guidelines-status")
     collection = g_data.get("collection", {})
+    seed_count = g_data.get("seed_sources_count", 0)
+    scraped_count = g_data.get("scraped_sources_count", 0)
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Chunks", collection.get("total_chunks", 0))
     col2.metric("Sources Loaded", collection.get("total_sources", 0))
-    col3.metric("Status", "✅ Ready" if collection.get("total_chunks", 0) > 0 else "⚠️ Empty")
-    col4.metric("Target Sources", 63)
+    col3.metric("Status", "✅ Ready" if collection.get("total_chunks", 0) > 0 else "⏳ Loading")
+    col4.metric("Full Target", 63)
 
     if collection.get("total_chunks", 0) == 0:
-        if st.session_state.get("_guidelines_loading"):
-            st.info(
-                "Guidelines are loading in the background (auto-triggered on dashboard open). "
-                "This takes ~5 minutes. Refresh this page to check progress."
-            )
-        else:
-            st.warning(
-                "Guidelines not loaded. They load automatically when the dashboard opens, "
-                "or click **⚡ Full Refresh — All 63 Sources** below."
-            )
+        st.warning(
+            "Guidelines are loading in the background (auto-started on API startup). "
+            "This takes 30–60 seconds. Refresh this page to check progress, "
+            "or click **⚡ Full Refresh** below to force a load."
+        )
+    elif seed_count > 0 and scraped_count == 0:
+        st.info(
+            f"✅ **{collection['total_chunks']} guideline chunks loaded** from {seed_count} core sources (seed data). "
+            f"Agents have full RAG access. Click **⚡ Full Refresh** to load all 63 sources with the latest content from USPSTF, CDC, ADA, etc."
+        )
+    else:
+        st.success(
+            f"✅ **{collection['total_chunks']} chunks** across **{collection['total_sources']} sources** — "
+            f"full guideline coverage active."
+        )
 
     st.markdown("---")
 
@@ -1152,27 +1183,43 @@ elif page == "📚 Guidelines KB":
             results = api_get(f"/guidelines-search?q={test_q}&n=3")
         if results.get("results"):
             for r in results["results"]:
+                # Show rerank score when available (more meaningful than cosine %)
+                rerank = r.get("rerank_score", 0)
+                cosine = r.get("relevance_score", 0)
+                score_display = f"rerank: {rerank:.2f}" if rerank else f"match: {cosine:.0%}"
                 with st.expander(
-                    f"[{r.get('relevance_score', 0):.0%}] {r['source_name']}"
+                    f"[{score_display}] {r['source_name']}"
                 ):
                     st.markdown(f"**Source:** [{r['source_name']}]({r['url']})")
                     st.markdown(f"**Retrieved:** {r.get('scraped_at', '')}")
-                    st.markdown(f"> {r['text'][:400]}...")
+                    st.markdown(f"> {r['text'][:500]}...")
         else:
-            st.info("No results — run `python rag/refresh_flow.py` to populate the KB.")
+            st.info("No results found for that query.")
 
     st.markdown("---")
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("▶ Weekly Refresh (USPSTF + CDC)", use_container_width=True):
+        if st.button("▶ Weekly Refresh (changed sources only)", use_container_width=True):
             r = api_post("/refresh-guidelines",
                          {"source_ids": None, "force": False, "triggered_by": "dashboard"})
             st.success(r.get("message", "Refresh started"))
     with col_b:
-        if st.button("⚡ Full Refresh — All 63 Sources", use_container_width=True):
+        if st.button("⚡ Full Refresh — All 63 Sources (force)", use_container_width=True):
             r = api_post("/refresh-guidelines",
                          {"source_ids": None, "force": True, "triggered_by": "dashboard_manual"})
-            st.success(r.get("message", "Full refresh started"))
+            st.success(r.get("message", "Full refresh started (~5 min)"))
+
+    st.markdown("---")
+    recent = g_data.get("recent_refreshes", [])
+    if recent:
+        st.markdown("#### Recent Refresh History")
+        for entry in recent[:3]:
+            ts = entry.get("timestamp", "")[:16].replace("T", " ")
+            mode = entry.get("mode", "")
+            embedded = entry.get("sources_embedded", 0)
+            chunks = entry.get("total_chunks", 0)
+            validation = entry.get("validation", "")
+            st.caption(f"**{ts}** · {mode} · {embedded} sources embedded · {chunks} total chunks · validation: {validation}")
 
     st.markdown("---")
     st.markdown("**Research basis:**")
@@ -1225,8 +1272,8 @@ streamlit run frontend/app.py
 # Run Prefect batch
 python orchestration/prefect_flow.py
 
-# Populate guidelines KB (first time, ~5 min)
-python rag/refresh_flow.py
+# Force-populate guidelines KB (full 63-source scrape, ~5 min)
+python rag/refresh_flow.py --force
 
 # Test knowledge graph
 python knowledge_graph/clinical_graph.py
@@ -1249,8 +1296,6 @@ python agents/drug_safety_agent.py
 | HITL escalation | Tiered agentic oversight | arXiv 2025.6 |
 | Prefect orchestration | Production scheduling | — |
 """)
-
-# ── Footer ─────────────────────────────────────────────────────────────────────
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Last refreshed: {datetime.now().strftime('%H:%M:%S')}")

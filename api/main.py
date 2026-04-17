@@ -59,10 +59,57 @@ def init_db():
         conn.commit()
 
 
+def _seed_guidelines_if_empty():
+    """
+    Embed hardcoded seed guidelines into ChromaDB if the collection is empty.
+
+    This runs at startup and guarantees agents always have RAG access,
+    even on Railway/Render where the filesystem is ephemeral.
+
+    The seed covers 20 clinical guideline excerpts across:
+    diabetes, CKD, cardiovascular, preventive screening, immunization,
+    oncology, mental health, rheumatology, pulmonary, and geriatrics.
+
+    The full scraping pipeline (rag/refresh_flow.py) will replace/augment
+    these seeds with fresher content when triggered manually or on schedule.
+    """
+    try:
+        from rag.embedder import get_collection_stats, embed_source
+        stats = get_collection_stats()
+
+        if stats.get("total_chunks", 0) > 0:
+            print(f"[Startup] Guidelines already loaded: {stats['total_chunks']} chunks across {stats['total_sources']} sources")
+            return
+
+        print("[Startup] ChromaDB is empty — embedding seed guidelines...")
+        from rag.guideline_seed import get_seed_as_scraped_format, get_seed_count
+        seed_data = get_seed_as_scraped_format()
+
+        embedded_count = 0
+        for source in seed_data:
+            result = embed_source(source)
+            if result.get("status") == "embedded":
+                embedded_count += result.get("chunks_embedded", 0)
+
+        print(f"[Startup] ✅ Seed guidelines embedded: {embedded_count} chunks across {len(seed_data)} sources")
+        print("[Startup] Agents now have RAG access. Run /refresh-guidelines for full 63-source load.")
+
+    except ImportError as e:
+        print(f"[Startup] RAG dependencies not available (OK for lightweight deploys): {e}")
+    except Exception as e:
+        print(f"[Startup] Warning: could not seed guidelines: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 @app.on_event("startup")
 def on_startup():
     init_db()
-    print("[Startup] API ready. Use POST /refresh-guidelines to populate the guidelines KB.")
+    # Seed guidelines in background so startup isn't blocked
+    import threading
+    t = threading.Thread(target=_seed_guidelines_if_empty, daemon=True)
+    t.start()
+    print("[Startup] API ready. Guidelines seeding in background...")
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -107,7 +154,6 @@ def write_audit(patient_id: str, status: str, result: dict):
 
 
 # ── In-flight dedup guard ─────────────────────────────────────────────────────
-# Prevents double-run if user clicks twice or two requests arrive simultaneously
 _in_flight: set = set()
 
 
@@ -116,13 +162,12 @@ _in_flight: set = set()
 def run_triage_background(patient_id: str, mode: str):
     """
     Run agent workflow in background with:
-    - Deduplication guard (skip if same patient+mode already running)
+    - Deduplication guard
     - Automatic retry with exponential backoff on rate limit errors
     - Full audit logging of success and failure
     """
     run_key = f"{patient_id}:{mode}"
 
-    # ── Dedup: skip if already running ────────────────────────────────────────
     if run_key in _in_flight:
         print(f"[Background] Skipping duplicate run for {run_key}")
         return
@@ -131,10 +176,6 @@ def run_triage_background(patient_id: str, mode: str):
     print(f"\n[Background] Starting {mode} workflow for {patient_id}")
 
     def _with_retry(fn, *args, max_retries=3, base_delay=15):
-        """
-        Run fn with exponential backoff retry on 429 rate limit errors.
-        base_delay=15s gives the token bucket time to refill.
-        """
         import time
         for attempt in range(max_retries):
             try:
@@ -147,9 +188,9 @@ def run_triage_background(patient_id: str, mode: str):
                     wait = base_delay * (2 ** attempt)
                     kind = "Rate limit" if is_rate_limit else "Connection error"
                     print(f"[Background] {kind} — waiting {wait}s before retry {attempt+1}/{max_retries}")
-                    time.sleep(wait)
+                    import time as t; t.sleep(wait)
                 else:
-                    raise  # non-transient error, don't retry
+                    raise
         raise RuntimeError(f"Max retries exceeded for {patient_id}")
 
     try:
@@ -165,7 +206,10 @@ def run_triage_background(patient_id: str, mode: str):
                     results.append(r)
                     print(f"[Background] Auth result: {r.get('decision')} ({r.get('confidence', 0):.0%})")
 
-            write_audit(patient_id, "COMPLETED", {"mode": mode, "auth_results": results})
+            write_audit(patient_id, "COMPLETED", {
+                "mode": "auth_only",
+                "auth_results": results
+            })
 
         elif mode == "care_gap_only":
             from agents.care_gap_agent import run_care_gap_review
@@ -175,7 +219,7 @@ def run_triage_background(patient_id: str, mode: str):
             print(f"[Background] Care gap complete: {result['steps_executed']} steps")
 
             write_audit(patient_id, "COMPLETED", {
-                "mode": mode,
+                "mode": "care_gap_only",
                 "steps_executed": result["steps_executed"],
                 "final_report": result["final_report"]
             })
@@ -184,6 +228,8 @@ def run_triage_background(patient_id: str, mode: str):
             from agents.triage_supervisor import run_triage
 
             result = _with_retry(run_triage, patient_id)
+            # Ensure mode key is always present for frontend display routing
+            result["mode"] = "full"
             status = result.get("status", "COMPLETED")
             write_audit(patient_id, status, result)
 
@@ -331,8 +377,8 @@ def get_audit_log(patient_id: Optional[str] = None, limit: int = 50):
 # ── Guidelines RAG endpoints ──────────────────────────────────────────────────
 
 class RefreshGuidelinesRequest(BaseModel):
-    source_ids: Optional[list[str]] = None  # None = refresh ALL sources
-    force: bool = False                      # True = re-embed even unchanged
+    source_ids: Optional[list[str]] = None
+    force: bool = False
     triggered_by: str = "api"
 
 
@@ -341,12 +387,6 @@ def refresh_guidelines(
     request: RefreshGuidelinesRequest,
     background_tasks: BackgroundTasks
 ):
-    """
-    Manually trigger a guidelines refresh.
-    Use this when a major guideline update is published (e.g. new ADA Standards).
-    source_ids=null refreshes ALL sources.
-    force=true re-embeds everything even if content hasn't changed.
-    """
     background_tasks.add_task(
         _run_guidelines_refresh_background,
         request.source_ids,
@@ -366,21 +406,30 @@ def refresh_guidelines(
 
 @app.get("/guidelines-status")
 def get_guidelines_status():
-    """
-    Return current state of the guidelines vector store
-    and the last 5 refresh runs.
-    """
     try:
         from rag.embedder import get_collection_stats
         from rag.refresh_flow import get_refresh_log
 
         stats = get_collection_stats()
-        log = get_refresh_log()[:5]  # last 5 runs
+        log = get_refresh_log()[:5]
+
+        # Describe what's loaded — seeds vs full scrape
+        seed_sources = [s["source_id"] for s in stats.get("sources", []) if s["source_id"].startswith("seed_")]
+        scraped_sources = [s for s in stats.get("sources", []) if not s["source_id"].startswith("seed_")]
+
+        if stats["total_chunks"] == 0:
+            status_msg = "empty — seeding in progress or run /refresh-guidelines"
+        elif seed_sources and not scraped_sources:
+            status_msg = f"seeded ({len(seed_sources)} core sources, {stats['total_chunks']} chunks) — run /refresh-guidelines for full 63-source load"
+        else:
+            status_msg = f"healthy ({stats['total_sources']} sources, {stats['total_chunks']} chunks)"
 
         return {
             "collection": stats,
             "recent_refreshes": log,
-            "status": "healthy" if stats["total_chunks"] > 0 else "empty — run /refresh-guidelines first"
+            "status": status_msg,
+            "seed_sources_count": len(seed_sources),
+            "scraped_sources_count": len(scraped_sources),
         }
     except Exception as e:
         return {
@@ -392,10 +441,6 @@ def get_guidelines_status():
 
 @app.get("/guidelines-search")
 def search_guidelines(q: str, category: Optional[str] = None, n: int = 3):
-    """
-    Test the guidelines search directly.
-    Useful for verifying the RAG layer is working before running agents.
-    """
     try:
         from rag.retriever import retrieve_guidelines
         results = retrieve_guidelines(q, category=category, n_results=n)
@@ -411,7 +456,6 @@ def search_guidelines(q: str, category: Optional[str] = None, n: int = 3):
 # ── Analytics endpoints ───────────────────────────────────────────────────────
 
 def _safe_analytics(fn, *args, fallback=None):
-    """Run an analytics function and return a fallback dict on any error."""
     try:
         return fn(*args)
     except Exception as e:
@@ -486,7 +530,6 @@ def _run_guidelines_refresh_background(
     force: bool,
     triggered_by: str
 ):
-    """Background task that runs the Prefect manual refresh flow."""
     try:
         from rag.refresh_flow import manual_refresh_flow
         manual_refresh_flow(
