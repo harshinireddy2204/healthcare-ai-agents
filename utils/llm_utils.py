@@ -1,70 +1,183 @@
 """
 utils/llm_utils.py
 
-Central retry wrapper for all OpenAI LLM calls with DETAILED error reporting.
+Central LLM wrapper with proactive rate limiting.
 
-The OpenAI SDK's APIConnectionError and APIError classes have short __str__
-representations ("Connection error.") that hide the real underlying cause.
-This module unwraps them so you can actually debug deployment issues.
+Problem this solves:
+  OpenAI's gpt-4o-mini has a 200,000 TPM (tokens per minute) limit on free tier.
+  A single care-gap agent run consumes ~180k tokens across 13 sequential steps.
+  When any agent runs, the TPM bucket gets drained to near zero. The NEXT call
+  (even inside the same workflow) then hits 429 because there's no headroom.
 
-Common causes of "Connection error" on Railway/Render that this file exposes:
-  1. OPENAI_API_KEY is missing or blank → AuthenticationError (was masked)
-  2. OPENAI_API_KEY has trailing whitespace from env var copy-paste
-  3. Account has no billing / $0 balance → 429 with "insufficient_quota"
-  4. Network timeout on cold container → httpx ConnectTimeout
-  5. DNS resolution failure → httpx ConnectError
+  The old approach caught 429s and retried after 15s — but 15s isn't enough
+  when the bucket is fully drained. OpenAI's token bucket refills at a
+  constant rate (TPM/60 per second), so a fully drained bucket needs ~60s
+  of idle time to fully refill. Reactive retry was fighting this losing battle.
+
+Solution: proactive token budget tracking.
+  - Before each LLM call, estimate its token cost using tiktoken
+  - Track tokens spent in the last 60 seconds (sliding window)
+  - If the estimated call would exceed budget, sleep PROACTIVELY until headroom exists
+  - On 429 responses, use the actual retry-after hint from OpenAI
+  - On bucket-drained 429s (Used 200000), force a full 65s wait
+
+This prevents 429s from happening in the first place, making workflows
+reliable instead of lucky.
 """
 import os
 import re
+import threading
 import time
-import traceback
+from collections import deque
+from typing import Optional
 
 import openai
 
 
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+# OpenAI TPM limits for gpt-4o-mini by tier:
+#   Free tier:  200,000 TPM  (default if env var not set)
+#   Tier 1:   2,000,000 TPM  (unlocked after $5 spend + 7 days)
+#   Tier 2:   2,000,000 TPM  ($50 spend + 7 days)
+#   Tier 3:   4,000,000 TPM  ($100 spend + 7 days)
+#
+# Set OPENAI_TPM_LIMIT on Railway to override. For Tier 1, use 2000000.
+# Check your current tier at platform.openai.com → Settings → Limits.
+TPM_LIMIT = int(os.getenv("OPENAI_TPM_LIMIT", "200000"))
+TPM_SAFETY_MARGIN = 0.90
+TPM_USABLE = int(TPM_LIMIT * TPM_SAFETY_MARGIN)
+
 _MAX_ATTEMPTS = 6
-_BASE_WAIT_S = 5
 
 
-def _unwrap_error(err: Exception) -> str:
+# ── Sliding-window token tracker ──────────────────────────────────────────────
+
+class TokenBudget:
     """
-    Extract the real error detail from an OpenAI SDK exception.
-
-    OpenAI wraps httpx errors and their __str__ is usually just
-    "Connection error." which is useless for debugging. This function
-    walks the exception chain and body to find the actual cause.
+    Thread-safe sliding 60-second token budget tracker.
+    Mirrors OpenAI's TPM rate limit algorithm.
     """
-    parts = [type(err).__name__]
 
-    # OpenAI SDK error body often contains JSON with real error info
-    body = getattr(err, "body", None)
-    if body and isinstance(body, dict):
-        msg = body.get("message") or body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else None
-        if msg:
-            parts.append(f"body.message={msg}")
+    def __init__(self, limit: int = TPM_USABLE):
+        self.limit = limit
+        self._history: deque = deque()
+        self._lock = threading.Lock()
 
-    # response.status_code reveals if it's auth, rate limit, etc.
-    response = getattr(err, "response", None)
-    if response is not None:
-        status = getattr(response, "status_code", None)
-        if status:
-            parts.append(f"status={status}")
+    def _prune(self):
+        cutoff = time.time() - 60
+        while self._history and self._history[0][0] < cutoff:
+            self._history.popleft()
 
-    # __cause__ is the underlying httpx error
-    cause = err.__cause__ or err.__context__
-    if cause:
-        parts.append(f"cause={type(cause).__name__}: {cause}")
+    def current_usage(self) -> int:
+        with self._lock:
+            self._prune()
+            return sum(tokens for _, tokens in self._history)
 
-    # Fallback to the message itself
-    msg = str(err)
-    if msg and msg != "Connection error.":
-        parts.append(f"msg={msg}")
+    def record(self, tokens: int):
+        with self._lock:
+            self._history.append((time.time(), tokens))
 
-    return " | ".join(parts) if len(parts) > 1 else (msg or type(err).__name__)
+    def available(self) -> int:
+        return max(0, self.limit - self.current_usage())
+
+    def wait_until_available(self, needed: int) -> float:
+        """
+        Block until there's headroom for `needed` tokens.
+        Returns total seconds slept.
+        """
+        if needed >= self.limit:
+            print(f"  [TokenBudget] Request size {needed} > limit {self.limit}. Waiting 60s...")
+            time.sleep(60)
+            return 60
+
+        total_slept = 0.0
+        while True:
+            with self._lock:
+                self._prune()
+                current = sum(tokens for _, tokens in self._history)
+                if current + needed <= self.limit:
+                    return total_slept
+
+                if not self._history:
+                    wait = 1.0
+                else:
+                    oldest_ts = self._history[0][0]
+                    wait = max(0.5, (oldest_ts + 60) - time.time() + 0.2)
+                    wait = min(wait, 10.0)
+
+            if total_slept == 0:
+                print(f"  [TokenBudget] Usage {current}/{self.limit}, need {needed} — waiting {wait:.1f}s")
+
+            time.sleep(wait)
+            total_slept += wait
+
+            if total_slept > 90:
+                print(f"  [TokenBudget] Exceeded max wait (90s). Proceeding anyway.")
+                return total_slept
 
 
-def _parse_retry_seconds(err: openai.RateLimitError) -> float | None:
-    """Extract the suggested wait time from an OpenAI 429 error message."""
+_budget = TokenBudget()
+
+
+# ── Token estimator ───────────────────────────────────────────────────────────
+
+_tiktoken_enc = None
+
+def _get_tiktoken():
+    global _tiktoken_enc
+    if _tiktoken_enc is None:
+        try:
+            import tiktoken
+            _tiktoken_enc = tiktoken.get_encoding("o200k_base")
+        except Exception:
+            _tiktoken_enc = False
+    return _tiktoken_enc
+
+
+def estimate_tokens(messages: list) -> int:
+    """
+    Estimate token count for a message list.
+    Adds 1.5x safety margin for LangChain tool definitions not visible here,
+    plus 2000 tokens for expected response.
+    """
+    enc = _get_tiktoken()
+
+    if enc:
+        total = 0
+        for msg in messages:
+            content = ""
+            if hasattr(msg, "content"):
+                content = msg.content or ""
+            elif isinstance(msg, dict):
+                content = msg.get("content", "") or ""
+
+            if isinstance(content, str):
+                total += len(enc.encode(content))
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and "text" in block:
+                        total += len(enc.encode(block.get("text", "")))
+            total += 4
+        total += 2000  # expected response
+        return int(total * 1.5)  # safety margin for tool defs
+
+    # Fallback heuristic
+    total_chars = 0
+    for msg in messages:
+        content = ""
+        if hasattr(msg, "content"):
+            content = msg.content or ""
+        elif isinstance(msg, dict):
+            content = msg.get("content", "") or ""
+        if isinstance(content, str):
+            total_chars += len(content)
+    return int(total_chars / 4 * 1.5) + 3000
+
+
+# ── Retry helpers ─────────────────────────────────────────────────────────────
+
+def _parse_retry_seconds(err: openai.RateLimitError) -> Optional[float]:
     msg = str(err)
     m = re.search(r"(\d+)m(\d+\.?\d*)s", msg, re.IGNORECASE)
     if m:
@@ -78,119 +191,129 @@ def _parse_retry_seconds(err: openai.RateLimitError) -> float | None:
     return None
 
 
-def check_openai_credentials() -> dict:
-    """
-    Validate OPENAI_API_KEY at startup by making one tiny test call.
+def _is_bucket_fully_drained(err: openai.RateLimitError) -> bool:
+    """Detect the 'Used 200000' case where bucket is fully drained."""
+    msg = str(err)
+    m = re.search(r"Used (\d+)", msg)
+    if m:
+        used = int(m.group(1))
+        return used >= TPM_LIMIT * 0.97
+    return False
 
-    Returns a dict with 'ok' bool and 'message' string. Used to fail-fast
-    if the key is missing/invalid, instead of discovering it only when a
-    user triggers an agent workflow.
-    """
-    key = os.getenv("OPENAI_API_KEY", "")
-    if not key:
-        return {"ok": False, "message": "OPENAI_API_KEY is not set in environment"}
-    if not key.startswith("sk-"):
-        return {"ok": False, "message": f"OPENAI_API_KEY does not start with 'sk-' (starts with '{key[:3]}')"}
-    if key != key.strip():
-        return {"ok": False, "message": "OPENAI_API_KEY has leading/trailing whitespace — trim it in Railway Variables"}
 
-    # Make a tiny test call — 1 token, costs fractionally
+def _extract_actual_usage(result) -> Optional[int]:
+    """Pull actual total_tokens from LangChain response if available."""
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=key, timeout=10)
-        client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "gpt-4o-mini"),
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=1,
-        )
-        return {"ok": True, "message": "OpenAI credentials valid"}
-    except openai.AuthenticationError as e:
-        return {"ok": False, "message": f"OPENAI_API_KEY is invalid: {_unwrap_error(e)}"}
-    except openai.RateLimitError as e:
-        unwrapped = _unwrap_error(e)
-        if "insufficient_quota" in unwrapped.lower() or "billing" in unwrapped.lower():
-            return {"ok": False, "message": f"OpenAI account has no credits — add billing at platform.openai.com/account/billing. Details: {unwrapped}"}
-        return {"ok": True, "message": f"OpenAI reachable but rate-limited: {unwrapped}"}
-    except openai.APIConnectionError as e:
-        return {"ok": False, "message": f"Cannot reach OpenAI from this container: {_unwrap_error(e)}"}
-    except Exception as e:
-        return {"ok": False, "message": f"Unexpected error validating key: {type(e).__name__}: {e}"}
+        meta = getattr(result, "response_metadata", None) or getattr(result, "usage_metadata", None)
+        if meta:
+            if isinstance(meta, dict):
+                usage = meta.get("token_usage") or meta.get("usage") or meta
+                if isinstance(usage, dict):
+                    total = usage.get("total_tokens")
+                    if total:
+                        return int(total)
+    except Exception:
+        pass
+    return None
 
+
+# ── Main wrapper ──────────────────────────────────────────────────────────────
 
 def llm_invoke(llm, messages):
     """
-    Call llm.invoke(messages) with automatic retry on transient OpenAI errors
-    and DETAILED error logging for production debugging.
+    Call llm.invoke(messages) with proactive rate limiting and retry.
+
+    Flow:
+      1. Estimate tokens needed
+      2. Wait until budget has headroom (proactive — prevents 429s)
+      3. Make the call
+      4. Record actual token usage
+      5. On 429: use OpenAI's hint or 65s for full drain
+      6. On connection error: exponential backoff
     """
+    needed = estimate_tokens(messages)
+    _budget.wait_until_available(needed)
+
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            return llm.invoke(messages)
+            result = llm.invoke(messages)
+            actual = _extract_actual_usage(result)
+            _budget.record(actual if actual else needed)
+            return result
 
         except openai.AuthenticationError as e:
-            # Never retry auth errors — key is bad
-            detail = _unwrap_error(e)
             raise RuntimeError(
-                f"[LLM] Authentication failed — OPENAI_API_KEY is invalid. "
-                f"Check Railway Variables tab. Details: {detail}"
+                f"[LLM] Authentication failed — check OPENAI_API_KEY. Error: {e}"
             ) from e
 
         except openai.RateLimitError as e:
-            detail = _unwrap_error(e)
-            # insufficient_quota means no billing — don't retry
-            if "insufficient_quota" in detail.lower():
-                raise RuntimeError(
-                    f"[LLM] OpenAI account has no credits. "
-                    f"Add billing at platform.openai.com/account/billing. "
-                    f"Details: {detail}"
-                ) from e
             if attempt == _MAX_ATTEMPTS - 1:
                 raise
-            parsed = _parse_retry_seconds(e)
-            wait = max(parsed or 0, 15 * (attempt + 1))
-            wait = min(wait, 90)
-            print(
-                f"  [RateLimit] 429 — waiting {wait:.0f}s "
-                f"(attempt {attempt + 1}/{_MAX_ATTEMPTS}) — {detail}"
-            )
+
+            _budget.record(needed)
+
+            if _is_bucket_fully_drained(e):
+                wait = 65
+                print(f"  [RateLimit] Bucket drained. Waiting {wait}s for full refill...")
+            else:
+                parsed = _parse_retry_seconds(e)
+                wait = max(parsed or 0, 20 * (attempt + 1))
+                wait = min(wait, 90)
+                print(
+                    f"  [RateLimit] 429 — waiting {wait:.0f}s "
+                    f"(attempt {attempt + 1}/{_MAX_ATTEMPTS - 1})"
+                )
+
             time.sleep(wait)
 
         except openai.APIConnectionError as e:
-            detail = _unwrap_error(e)
             if attempt == _MAX_ATTEMPTS - 1:
-                # Final failure — give users actionable diagnostic info
                 raise RuntimeError(
                     f"[LLM] Cannot reach OpenAI after {_MAX_ATTEMPTS} attempts. "
-                    f"Diagnostic checklist:\n"
-                    f"  1. Is OPENAI_API_KEY set in Railway Variables? (starts with sk-, no whitespace)\n"
-                    f"  2. Does the account have credits? platform.openai.com/account/usage\n"
-                    f"  3. Is the Railway container able to reach the internet at all?\n"
-                    f"Details: {detail}"
+                    f"Check OPENAI_API_KEY and account credits. Error: {e}"
                 ) from e
             wait = min(3 * (2 ** attempt), 30)
             print(
-                f"  [ConnError] {detail} — waiting {wait}s "
-                f"(attempt {attempt + 1}/{_MAX_ATTEMPTS})"
+                f"  [ConnError] Connection error — waiting {wait}s "
+                f"(attempt {attempt + 1}/{_MAX_ATTEMPTS - 1}): {e}"
             )
             time.sleep(wait)
 
-        except openai.APIError as e:
-            # Covers BadRequestError, InternalServerError, etc.
-            detail = _unwrap_error(e)
-            # Only retry 5xx; 4xx means the request itself is bad
-            status = getattr(getattr(e, "response", None), "status_code", 500)
-            if status < 500 or attempt == _MAX_ATTEMPTS - 1:
-                raise RuntimeError(f"[LLM] OpenAI API error (status={status}): {detail}") from e
-            wait = min(3 * (2 ** attempt), 20)
-            print(f"  [APIError] status={status} — waiting {wait}s — {detail}")
-            time.sleep(wait)
 
-        except Exception as e:
-            # Unexpected errors — log full traceback and retry once
-            if attempt == _MAX_ATTEMPTS - 1:
-                raise
-            print(
-                f"  [UnexpectedError] {type(e).__name__}: {e} — "
-                f"waiting 5s (attempt {attempt + 1}/{_MAX_ATTEMPTS})"
-            )
-            traceback.print_exc()
-            time.sleep(5)
+# ── Startup credential check ──────────────────────────────────────────────────
+
+def check_openai_credentials() -> dict:
+    """Validate OPENAI_API_KEY at FastAPI startup."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return {"ok": False, "message": "OPENAI_API_KEY env var is not set"}
+    if not api_key.startswith("sk-"):
+        return {"ok": False, "message": "OPENAI_API_KEY doesn't look valid (should start with 'sk-')"}
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        client.models.list()
+        return {
+            "ok": True,
+            "message": f"OpenAI credentials valid. TPM: {TPM_LIMIT} (using {TPM_USABLE})",
+            "tpm_limit": TPM_LIMIT,
+            "tpm_usable": TPM_USABLE,
+        }
+    except openai.AuthenticationError as e:
+        return {"ok": False, "message": f"Invalid OPENAI_API_KEY: {e}"}
+    except Exception as e:
+        return {"ok": False, "message": f"OpenAI check failed: {e}"}
+
+
+# ── Debug endpoint helper ─────────────────────────────────────────────────────
+
+def get_budget_status() -> dict:
+    """Return current token budget state for /diagnostics endpoint."""
+    return {
+        "tpm_limit": TPM_LIMIT,
+        "tpm_usable": TPM_USABLE,
+        "current_usage": _budget.current_usage(),
+        "available": _budget.available(),
+        "headroom_pct": round(_budget.available() / TPM_USABLE * 100, 1),
+    }
