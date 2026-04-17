@@ -241,7 +241,18 @@ def _run_low_complexity(patient_id: str, profile: dict) -> dict:
                     r = run_prior_auth(patient_id, req["request_id"], req["item"])
                     auth_results.append(r)
                 except Exception as e:
-                    auth_results.append({"error": str(e)})
+                    # Never silently drop an auth request — always produce ESCALATE
+                    print(f"  [LOW] Auth error for {req['request_id']}: {e}")
+                    auth_results.append({
+                        "patient_id": patient_id,
+                        "request_id": req["request_id"],
+                        "item": req.get("item", "unknown"),
+                        "decision": "ESCALATE",
+                        "confidence": 0.4,
+                        "justification": "Auth agent error — escalating for manual review",
+                        "critic_reviewed": False,
+                        "was_revised": False
+                    })
         results["auth_results"] = auth_results
 
     # Build formatted crew_output so the frontend renders the same as MODERATE/HIGH
@@ -301,12 +312,12 @@ def _run_moderate_complexity(patient_id: str) -> dict:
     except Exception as e:
         print(f"  [MODERATE] Care gap error: {e}")
 
-    # Wait 60s between care gap and prior auth so the TPM window partially refills.
-    # Care gap consumes ~190k/200k tokens; prior auth needs ~7-10k per call.
-    # Without this pause, prior auth hits 429 on every attempt and exhausts its
-    # 300s timeout before the graph can complete.
-    print(f"  [MODERATE] Pausing 60s to allow TPM bucket to refill before auth...")
-    time.sleep(60)
+    # Wait 90s between care gap and prior auth so the full TPM window flushes.
+    # OpenAI TPM is a 60s sliding window. Care gap runs ~90s and uses ~190k/200k
+    # tokens. After the run ends, the last 60s of tokens are still in the window.
+    # 90s ensures ALL care gap tokens roll off before auth starts.
+    print(f"  [MODERATE] Pausing 90s to allow TPM window to fully flush before auth...")
+    time.sleep(90)
 
     # Step 4: Prior auth via LangGraph (with Agent/Critic)
     # Note: rate limits are now handled automatically by llm_invoke retry logic.
@@ -318,7 +329,16 @@ def _run_moderate_complexity(patient_id: str) -> dict:
         pending = get_pending_auth_requests.invoke({"patient_id": patient_id})
         for req in (pending or [])[:2]:
             if isinstance(req, dict) and "request_id" in req:
-                # Retry loop specifically for rate limit errors on auth start
+                _fallback = {
+                    "patient_id": patient_id,
+                    "request_id": req["request_id"],
+                    "item": req["item"],
+                    "decision": "ESCALATE",
+                    "confidence": 0.5,
+                    "justification": "Auth failed — escalating for manual review",
+                    "critic_reviewed": False,
+                    "was_revised": False
+                }
                 auth_r = None
                 for attempt in range(3):
                     try:
@@ -326,25 +346,20 @@ def _run_moderate_complexity(patient_id: str) -> dict:
                             run_prior_auth,
                             args=(patient_id, req["request_id"], req["item"]),
                             timeout_seconds=480,
-                            fallback={
-                                "patient_id": patient_id,
-                                "request_id": req["request_id"],
-                                "item": req["item"],
-                                "decision": "ESCALATE",
-                                "confidence": 0.5,
-                                "justification": "Auth timed out — escalating for manual review",
-                                "critic_reviewed": False,
-                                "was_revised": False
-                            }
+                            fallback=_fallback
                         )
                         break
                     except Exception as e:
-                        if "429" in str(e) or "rate_limit" in str(e).lower():
-                            wait = 20 * (attempt + 1)
-                            print(f"  [MODERATE] Auth 429 — waiting {wait}s (attempt {attempt+1}/3)")
+                        err_str = str(e)
+                        is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower()
+                        wait = 20 * (attempt + 1) if is_rate_limit else 5
+                        print(f"  [MODERATE] Auth {'429' if is_rate_limit else 'error'} attempt {attempt+1}/3 — {err_str[:80]}")
+                        if attempt < 2:
                             time.sleep(wait)
                         else:
-                            raise
+                            # Last attempt failed — fall back to ESCALATE so the
+                            # request is never silently dropped from the output
+                            auth_r = {**_fallback, "justification": f"Auth agent error after 3 attempts — escalating for manual review"}
                 if auth_r:
                     auth_results.append(auth_r)
                     print(f"  [MODERATE] Auth: {auth_r.get('decision')} ({auth_r.get('confidence',0):.0%})")
@@ -445,28 +460,43 @@ def _run_high_complexity(patient_id: str) -> dict:
         from agents.prior_auth_agent import run_prior_auth
         from tools.ehr_tools import get_pending_auth_requests
         pending = get_pending_auth_requests.invoke({"patient_id": patient_id})
-        # Same TPM refill pause as MODERATE — care gap exhausts the token budget
-        print(f"  [HIGH] Pausing 60s to allow TPM bucket to refill before auth...")
-        time.sleep(60)
+        # Same TPM flush pause as MODERATE — see comment there for rationale
+        print(f"  [HIGH] Pausing 90s to allow TPM window to fully flush before auth...")
+        time.sleep(90)
         for req in (pending or [])[:2]:
             if isinstance(req, dict) and "request_id" in req:
-                auth_r = _run_with_timeout(
-                    run_prior_auth,
-                    args=(patient_id, req["request_id"], req["item"]),
-                    timeout_seconds=480,
-                    fallback={
-                        "patient_id": patient_id,
-                        "request_id": req["request_id"],
-                        "item": req["item"],
-                        "decision": "ESCALATE",
-                        "confidence": 0.5,
-                        "justification": "Auth timed out — escalating for manual review",
-                        "critic_reviewed": False,
-                        "was_revised": False
-                    }
-                )
-                auth_results.append(auth_r)
-                print(f"  [HIGH] Auth: {auth_r.get('decision')} ({auth_r.get('confidence',0):.0%})")
+                _fallback = {
+                    "patient_id": patient_id,
+                    "request_id": req["request_id"],
+                    "item": req["item"],
+                    "decision": "ESCALATE",
+                    "confidence": 0.5,
+                    "justification": "Auth failed — escalating for manual review",
+                    "critic_reviewed": False,
+                    "was_revised": False
+                }
+                auth_r = None
+                for attempt in range(3):
+                    try:
+                        auth_r = _run_with_timeout(
+                            run_prior_auth,
+                            args=(patient_id, req["request_id"], req["item"]),
+                            timeout_seconds=480,
+                            fallback=_fallback
+                        )
+                        break
+                    except Exception as e:
+                        err_str = str(e)
+                        is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower()
+                        wait = 20 * (attempt + 1) if is_rate_limit else 5
+                        print(f"  [HIGH] Auth {'429' if is_rate_limit else 'error'} attempt {attempt+1}/3 — {err_str[:80]}")
+                        if attempt < 2:
+                            time.sleep(wait)
+                        else:
+                            auth_r = {**_fallback, "justification": f"Auth agent error after 3 attempts — escalating for manual review"}
+                if auth_r:
+                    auth_results.append(auth_r)
+                    print(f"  [HIGH] Auth: {auth_r.get('decision')} ({auth_r.get('confidence',0):.0%})")
                 time.sleep(3)
     except Exception as e:
         print(f"  [HIGH] Auth error: {e}")

@@ -107,10 +107,41 @@ with st.sidebar:
     st.markdown("---")
 
     health = api_get("/health")
-    if "_error" not in health:
+    api_online = "_error" not in health
+    if api_online:
         st.markdown('<span class="live-dot"></span> **API Online**', unsafe_allow_html=True)
     else:
         st.error("⚫ API Offline")
+
+    # ── Auto-load guidelines on first visit if KB is empty ────────────────────
+    # Runs once per browser session (guarded by session_state). If the
+    # guidelines ChromaDB has zero chunks, trigger a background refresh so
+    # agents have RAG access without requiring a manual button click.
+    if api_online and not st.session_state.get("_guidelines_checked"):
+        st.session_state["_guidelines_checked"] = True
+        try:
+            g_status = api_get("/guidelines-status", timeout=5)
+            chunks = g_status.get("collection", {}).get("total_chunks", 0)
+            if chunks == 0:
+                r = api_post("/refresh-guidelines",
+                             {"source_ids": None, "force": False, "triggered_by": "auto_startup"})
+                if "_error" not in r:
+                    st.session_state["_guidelines_loading"] = True
+        except Exception:
+            pass  # Non-critical — don't block the dashboard
+
+    if st.session_state.get("_guidelines_loading"):
+        # Check if it's done yet
+        try:
+            g_status = api_get("/guidelines-status", timeout=5)
+            chunks = g_status.get("collection", {}).get("total_chunks", 0)
+            if chunks > 0:
+                st.session_state["_guidelines_loading"] = False
+                st.success(f"📖 Guidelines loaded ({chunks} chunks)")
+            else:
+                st.info("📖 Guidelines loading in background (~5 min)...")
+        except Exception:
+            st.info("📖 Guidelines loading in background...")
 
     st.markdown("---")
     page = st.radio("Navigate", [
@@ -1098,9 +1129,16 @@ elif page == "📚 Guidelines KB":
     col4.metric("Target Sources", 63)
 
     if collection.get("total_chunks", 0) == 0:
-        st.warning(
-            "Guidelines not loaded. Click **⚡ Full Refresh — All 63 Sources** below to populate the knowledge base (~5 min)."
-        )
+        if st.session_state.get("_guidelines_loading"):
+            st.info(
+                "Guidelines are loading in the background (auto-triggered on dashboard open). "
+                "This takes ~5 minutes. Refresh this page to check progress."
+            )
+        else:
+            st.warning(
+                "Guidelines not loaded. They load automatically when the dashboard opens, "
+                "or click **⚡ Full Refresh — All 63 Sources** below."
+            )
 
     st.markdown("---")
 
