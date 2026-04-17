@@ -181,27 +181,60 @@ def write_audit(patient_id: str, status: str, result: dict):
         print(f"[Audit] Failed to write log for {patient_id}: {e}")
 
 
-# ── In-flight dedup guard ─────────────────────────────────────────────────────
-_in_flight: set = set()
+# ── Global workflow concurrency control ──────────────────────────────────────
+#
+# OpenAI's free tier caps us at 200,000 tokens/minute for gpt-4o-mini.
+# A single care-gap agent run uses ~190k of that in one burst. Any two
+# workflows running in parallel will ALWAYS collide and hit 429 rate limits,
+# regardless of which patient they're for.
+#
+# Solution: only one workflow runs at a time, globally. Additional requests
+# are rejected with HTTP 409 "workflow in progress". The frontend displays a
+# clear message and disables the Run button until the current run completes.
+#
+# This is the right trade-off for a public demo on free-tier OpenAI:
+#   - Solo user: zero wait, feels instant
+#   - Multiple concurrent users: each gets a clear "please wait" message
+#   - No rate-limit collisions, no silent failures
+#
+# In production you'd replace this with Redis-backed locks + a token budget,
+# but for a single-worker Railway deployment, a process-level lock is enough.
+
+import threading
+
+_workflow_lock = threading.Lock()
+_current_workflow: dict = {"patient_id": None, "mode": None, "started_at": None}
+
+
+def is_workflow_running() -> dict:
+    """Return info about the currently-running workflow, or None."""
+    if _workflow_lock.locked() and _current_workflow["patient_id"]:
+        elapsed = (datetime.utcnow() - _current_workflow["started_at"]).total_seconds() \
+            if _current_workflow["started_at"] else 0
+        return {
+            "running": True,
+            "patient_id": _current_workflow["patient_id"],
+            "mode": _current_workflow["mode"],
+            "elapsed_seconds": int(elapsed),
+            "estimated_remaining_seconds": max(0, 180 - int(elapsed)),  # typical ~3min
+        }
+    return {"running": False}
 
 
 # ── Background task ───────────────────────────────────────────────────────────
 
 def run_triage_background(patient_id: str, mode: str):
     """
-    Run agent workflow in background with:
-    - Deduplication guard
-    - Automatic retry with exponential backoff on rate limit errors
-    - Full audit logging of success and failure
+    Run one agent workflow under a global lock.
+
+    If the lock is already held (another workflow is running), this one is
+    rejected at the API layer before it ever reaches here — see process_patient.
+    This function assumes the lock has been acquired by the caller's try_acquire.
     """
-    run_key = f"{patient_id}:{mode}"
-
-    if run_key in _in_flight:
-        print(f"[Background] Skipping duplicate run for {run_key}")
-        return
-    _in_flight.add(run_key)
-
     print(f"\n[Background] Starting {mode} workflow for {patient_id}")
+    _current_workflow["patient_id"] = patient_id
+    _current_workflow["mode"] = mode
+    _current_workflow["started_at"] = datetime.utcnow()
 
     def _with_retry(fn, *args, max_retries=3, base_delay=15):
         import time
@@ -270,7 +303,13 @@ def run_triage_background(patient_id: str, mode: str):
         write_audit(patient_id, "FAILED", {"error": str(e), "mode": mode})
 
     finally:
-        _in_flight.discard(run_key)
+        # Clear current workflow tracking and release the lock so the next
+        # queued request (if any) can proceed.
+        _current_workflow["patient_id"] = None
+        _current_workflow["mode"] = None
+        _current_workflow["started_at"] = None
+        if _workflow_lock.locked():
+            _workflow_lock.release()
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -351,6 +390,29 @@ def process_patient(
     request: ProcessPatientRequest,
     background_tasks: BackgroundTasks
 ):
+    # Try to acquire the global workflow lock without blocking.
+    # If another workflow is already running, reject this request with 409
+    # and tell the user what's currently running + how long to wait.
+    if not _workflow_lock.acquire(blocking=False):
+        current = is_workflow_running()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "workflow_in_progress",
+                "message": (
+                    f"Another workflow is already running for patient "
+                    f"{current.get('patient_id', 'unknown')} "
+                    f"(mode: {current.get('mode', 'unknown')}, "
+                    f"running {current.get('elapsed_seconds', 0)}s). "
+                    f"Please wait ~{current.get('estimated_remaining_seconds', 180)}s and try again. "
+                    f"OpenAI's free-tier rate limit requires serializing runs."
+                ),
+                "current_workflow": current
+            }
+        )
+
+    # Lock acquired — schedule the background run. run_triage_background
+    # releases the lock in its finally block when the workflow completes.
     background_tasks.add_task(
         run_triage_background,
         request.patient_id,
@@ -366,9 +428,18 @@ def process_patient(
     return PatientSummary(
         patient_id=request.patient_id,
         status="PROCESSING",
-        message="Workflow triggered. Check /audit-log for results.",
+        message="Workflow triggered. Check /audit-log for results in 60-180 seconds.",
         workflow_triggered=mode_labels[request.mode]
     )
+
+
+@app.get("/workflow-status")
+def workflow_status():
+    """
+    Returns whether a workflow is currently running.
+    Frontend polls this to disable the Run button while a workflow is active.
+    """
+    return is_workflow_running()
 
 
 @app.get("/pending-reviews")

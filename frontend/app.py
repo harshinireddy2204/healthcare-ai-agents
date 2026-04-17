@@ -84,6 +84,18 @@ with st.sidebar:
     api_online = "_error" not in health
     if api_online:
         st.markdown('<span class="live-dot"></span> **API Online**', unsafe_allow_html=True)
+
+        # Show sidebar indicator if any workflow is currently running.
+        # Only one workflow can run at a time due to OpenAI's rate limit.
+        try:
+            wf_status = api_get("/workflow-status", timeout=3)
+            if wf_status.get("running"):
+                wf_pid = wf_status.get("patient_id", "?")
+                wf_elapsed = wf_status.get("elapsed_seconds", 0)
+                wf_eta = wf_status.get("estimated_remaining_seconds", 180)
+                st.warning(f"⏳ Running `{wf_pid}` ({wf_elapsed}s / ~{wf_eta}s left)")
+        except Exception:
+            pass
     else:
         st.error("⚫ API Offline")
 
@@ -493,25 +505,74 @@ elif page == "⚡ Run Agent Workflow":
         }
         st.caption(f"ℹ️ {mode_descriptions[mode]}")
 
-        if st.button("🚀 Run Workflow", type="primary"):
+        # Check if another workflow is already running so we can disable the
+        # Run button and show a clear status message. This prevents the
+        # double-click / concurrent-user case that was triggering OpenAI 429s.
+        workflow_status = api_get("/workflow-status")
+        is_running = workflow_status.get("running", False)
+
+        if is_running:
+            running_pid = workflow_status.get("patient_id", "unknown")
+            elapsed = workflow_status.get("elapsed_seconds", 0)
+            eta = workflow_status.get("estimated_remaining_seconds", 180)
+            st.warning(
+                f"⏳ **A workflow is currently running** for patient `{running_pid}` "
+                f"(running {elapsed}s, ~{eta}s remaining). "
+                f"Only one workflow can run at a time due to OpenAI's free-tier rate limit."
+            )
+
+        if st.button("🚀 Run Workflow", type="primary", disabled=is_running):
             with st.spinner(f"Triggering {mode} workflow for {patient_id}..."):
                 result = api_post("/process-patient", {"patient_id": patient_id, "mode": mode})
             if "_error" not in result:
                 st.success(f"✅ Workflow triggered — {result.get('workflow_triggered')}")
-                st.info("Check **Live Overview** or **Audit Log** for results in 60–120 seconds.")
+                st.info("Check **Live Overview** or **Audit Log** for results in 60–180 seconds.")
+                # Auto-refresh after a short delay so the button disables itself
+                time.sleep(1)
+                st.rerun()
             else:
-                st.error(f"Failed: {result['_error']}")
+                # Detect 409 "workflow already running" response
+                err = result.get("_error", "")
+                if "409" in err or "workflow_in_progress" in err.lower():
+                    st.error(
+                        "⚠️ Another workflow is already running. Please wait for it to "
+                        "complete before starting a new one. Refresh this page to check status."
+                    )
+                else:
+                    st.error(f"Failed: {err}")
 
         st.markdown("---")
         st.markdown("#### Quick batch — run all 20 patients")
-        st.caption("Runs care_gap_only on all patients to populate the dashboard.")
-        if st.button("▶ Run batch (all 20 patients, care_gap_only)"):
+        st.caption(
+            "Runs care_gap_only on all patients SEQUENTIALLY (one at a time). "
+            "This respects OpenAI's rate limit. Takes ~30 minutes total."
+        )
+        if st.button("▶ Run batch (all 20 patients, sequential)", disabled=is_running):
             progress = st.progress(0)
+            status_text = st.empty()
+            successes = 0
+            failures = 0
             for i, pid in enumerate(list(patient_profiles.keys())):
-                api_post("/process-patient", {"patient_id": pid, "mode": "care_gap_only"})
+                status_text.caption(f"Queuing patient {pid} ({i+1}/20)...")
+                r = api_post("/process-patient", {"patient_id": pid, "mode": "care_gap_only"})
+                if "_error" in r:
+                    failures += 1
+                else:
+                    successes += 1
                 progress.progress((i + 1) / 20)
-                time.sleep(0.3)
-            st.success("Batch triggered for all 20 patients.")
+                # Short delay between requests so we don't hammer the lock.
+                # The backend will reject any that arrive while one is still
+                # running — the user can re-run later to fill gaps.
+                time.sleep(2)
+            status_text.caption("")
+            if failures > 0:
+                st.warning(
+                    f"Queued {successes}/20 patients successfully. "
+                    f"{failures} were rejected because a workflow was already running — "
+                    f"wait for the current run to finish and retry the batch."
+                )
+            else:
+                st.success(f"✅ Queued all 20 patients. They will run one at a time.")
 
     with tab_fhir:
         st.markdown(
