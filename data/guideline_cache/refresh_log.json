@@ -1,5 +1,396 @@
 [
   {
+    "timestamp": "2026-04-17T00:27:39.457029",
+    "mode": "manual_full",
+    "triggered_by": "cli",
+    "sources_embedded": 5,
+    "sources_unchanged": 53,
+    "sources_skipped": 5,
+    "total_chunks": 697,
+    "total_sources": 62,
+    "validation": "PASS",
+    "embed_details": [
+      {
+        "source_id": "uspstf_breast_cancer",
+        "status": "embedded",
+        "chunks_embedded": 41,
+        "scraped_at": "2026-04-17T00:24:46.687159"
+      },
+      {
+        "source_id": "uspstf_colorectal",
+        "status": "embedded",
+        "chunks_embedded": 35,
+        "scraped_at": "2026-04-17T00:24:48.485855"
+      },
+      {
+        "source_id": "uspstf_hypertension",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_diabetes",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_lung_cancer",
+        "status": "embedded",
+        "chunks_embedded": 28,
+        "scraped_at": "2026-04-17T00:24:54.445504"
+      },
+      {
+        "source_id": "uspstf_depression",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_anxiety",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_osteoporosis",
+        "status": "embedded",
+        "chunks_embedded": 33,
+        "scraped_at": "2026-04-17T00:25:00.147387"
+      },
+      {
+        "source_id": "uspstf_obesity",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_cervical_cancer",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_prostate_cancer",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_alcohol",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_tobacco",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_falls_prevention",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "uspstf_statin",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "cdc_adult_immunization_schedule",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "cdc_immunization_notes",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "cdc_flu_guidance",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "ada_standards_2025",
+        "status": "embedded",
+        "chunks_embedded": 1,
+        "scraped_at": "2026-04-17T00:25:18.223994"
+      },
+      {
+        "source_id": "niddk_diabetes_overview",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niddk_diabetes_medicines",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "ada_ckd_diabetes",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "hedis_diabetes_measures",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_hypertension",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_hypertension_treatment",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_cholesterol",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_heart_failure",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_coronary_artery",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_afib",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "aha_cardiac_rehab",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "kdigo_ckd_2024",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niddk_ckd_overview",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niddk_kidney_failure",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nci_breast_cancer_treatment",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nci_prostate_cancer_treatment",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nci_colorectal_treatment",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nci_cancer_screening",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_copd",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_asthma",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_sleep_apnea",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nimh_depression",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nimh_anxiety",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "samhsa_substance_use",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "cdc_obesity_adult",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_obesity_guidelines",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nia_older_adult_health",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nia_dementia",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niams_rheumatoid_arthritis",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niams_lupus",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niams_osteoporosis",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niams_osteoarthritis",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_stroke",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "ninds_parkinson",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nhlbi_migraine",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nichd_pcos",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "nichd_thyroid",
+        "status": "skipped",
+        "reason": "Fetch failed \u2014 no cache available",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "cdc_antibiotic_stewardship",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "cdc_hiv_prevention",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niddk_crohns",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "niddk_ibs",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "hedis_colorectal_screening",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "hedis_cardiovascular",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      },
+      {
+        "source_id": "hedis_mental_health",
+        "status": "unchanged",
+        "reason": "Content hash unchanged \u2014 skipping re-embed",
+        "chunks_embedded": 0
+      }
+    ]
+  },
+  {
     "timestamp": "2026-04-16T22:34:11.898231",
     "mode": "manual_full",
     "triggered_by": "dashboard_manual",

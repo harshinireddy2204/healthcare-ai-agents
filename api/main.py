@@ -408,12 +408,23 @@ def refresh_guidelines(
 def get_guidelines_status():
     try:
         from rag.embedder import get_collection_stats
-        from rag.refresh_flow import get_refresh_log
 
         stats = get_collection_stats()
-        log = get_refresh_log()[:5]
 
-        # Describe what's loaded — seeds vs full scrape
+        # Read refresh log directly from file — avoids importing rag.refresh_flow
+        # which has Prefect @flow/@task decorators at module level that attempt to
+        # connect to a Prefect server (which doesn't exist on Railway/Render).
+        import json as _json
+        from pathlib import Path
+        log_path = Path("data/guideline_cache/refresh_log.json")
+        log = []
+        if log_path.exists():
+            try:
+                with open(log_path) as f:
+                    log = _json.load(f)[:5]
+            except Exception:
+                log = []
+
         seed_sources = [s["source_id"] for s in stats.get("sources", []) if s["source_id"].startswith("seed_")]
         scraped_sources = [s for s in stats.get("sources", []) if not s["source_id"].startswith("seed_")]
 
@@ -530,13 +541,80 @@ def _run_guidelines_refresh_background(
     force: bool,
     triggered_by: str
 ):
+    """
+    Refresh clinical guidelines without requiring a running Prefect server.
+
+    Railway (and most PaaS platforms) don't run a Prefect API server, so
+    calling manual_refresh_flow() directly will fail with:
+      RuntimeError: Timed out while attempting to connect to ephemeral Prefect API server.
+
+    This function replicates what the Prefect flow does — scrape → embed →
+    validate → log — using the underlying functions directly, bypassing the
+    Prefect orchestration layer entirely.
+
+    The Prefect flow (rag/refresh_flow.py) is still useful for local scheduled
+    runs and CI pipelines where a Prefect server IS available.
+    """
+    print(f"\n[Guidelines Refresh] Starting ({triggered_by}, force={force}, sources={source_ids or 'ALL'})")
     try:
-        from rag.refresh_flow import manual_refresh_flow
-        manual_refresh_flow(
-            source_ids=source_ids,
-            force=force,
-            triggered_by=triggered_by
-        )
+        from rag.guideline_sources import GUIDELINE_SOURCES, SOURCES_BY_ID
+        from rag.scraper import scrape_all
+        from rag.embedder import embed_all, get_collection_stats
+        import json as _json
+        from pathlib import Path
+
+        # Step 1: select sources
+        if source_ids:
+            sources = [SOURCES_BY_ID[sid] for sid in source_ids if sid in SOURCES_BY_ID]
+            print(f"[Guidelines Refresh] Targeted refresh: {len(sources)} sources")
+        else:
+            sources = GUIDELINE_SOURCES
+            print(f"[Guidelines Refresh] Full refresh: {len(sources)} sources")
+
+        # Step 2: scrape
+        scraped = scrape_all(sources, force=force)
+        changed = sum(1 for r in scraped if r.get("changed"))
+        errors  = sum(1 for r in scraped if r.get("error") and not r.get("chunks"))
+        print(f"[Guidelines Refresh] Scrape complete: {changed} changed, {errors} errors")
+
+        # Step 3: embed
+        embed_stats = embed_all(scraped)
+        total_chunks = sum(s.get("chunks_embedded", 0) for s in embed_stats)
+        print(f"[Guidelines Refresh] Embed complete: {total_chunks} chunks")
+
+        # Step 4: validate
+        stats = get_collection_stats()
+        validation = "PASS" if stats.get("total_chunks", 0) > 0 else "WARN — collection empty"
+
+        # Step 5: write refresh log (same format as Prefect flow)
+        log_path = Path("data/guideline_cache/refresh_log.json")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = []
+        if log_path.exists():
+            try:
+                with open(log_path) as f:
+                    existing = _json.load(f)
+            except Exception:
+                existing = []
+
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "mode": f"direct_{'full' if not source_ids else 'targeted'}",
+            "triggered_by": triggered_by,
+            "sources_embedded": sum(1 for s in embed_stats if s["status"] == "embedded"),
+            "sources_unchanged": sum(1 for s in embed_stats if s["status"] == "unchanged"),
+            "sources_skipped": sum(1 for s in embed_stats if s["status"] == "skipped"),
+            "total_chunks": stats.get("total_chunks", 0),
+            "total_sources": stats.get("total_sources", 0),
+            "validation": validation,
+        }
+        existing.insert(0, entry)
+        with open(log_path, "w") as f:
+            _json.dump(existing[:50], f, indent=2)
+
+        print(f"[Guidelines Refresh] ✅ Done — {entry['sources_embedded']} sources, "
+              f"{entry['total_chunks']} total chunks, validation: {validation}")
+
     except Exception as e:
         print(f"[Guidelines Refresh] ERROR: {e}")
         import traceback
