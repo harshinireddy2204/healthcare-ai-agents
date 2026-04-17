@@ -1,38 +1,37 @@
 """
 rag/embedder.py
 
-Embeds clinical guideline chunks into ChromaDB using sentence-transformers.
+Clinical guideline embedder — now using OpenAI's text-embedding-3-small
+instead of local sentence-transformers.
 
-Changes from v1:
-  - All library logs suppressed (sentence_transformers, chromadb, torch)
-  - Embeddings normalized at encode time (required for accurate cosine similarity)
-  - Batch size reduced to 50 for stability on lower-RAM machines
-  - Chunk minimum length raised from 20 → 30 words (filters nav/header noise)
+Why this change:
+  Railway's free trial tier limits us to 1 GB RAM. Loading torch (~300 MB),
+  sentence-transformers (~90 MB), and a cross-encoder (~85 MB) plus
+  transformers tokenizers (~200 MB) consumed ~700 MB just at idle —
+  the OOM killer was killing the process during agent runs.
+
+  OpenAI's text-embedding-3-small:
+    - 1536-dimensional embeddings (matches ChromaDB cosine space)
+    - $0.00002 per 1K tokens = ~$0.001 for all 20 seed guidelines combined
+    - Zero local memory footprint (network call)
+    - No model download, no startup time
+    - MTEB score comparable to all-MiniLM-L6-v2 on retrieval tasks
+
+  This keeps the exact same ChromaDB persistence and retrieval interface —
+  only the embedding function changes.
 """
 import logging
 import os
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Optional  # noqa: F401 — kept for function signatures
 
-# ── Suppress all library noise before any imports ─────────────────────────────
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["CHROMA_TELEMETRY"] = "false"
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-os.environ["HUGGINGFACE_HUB_VERBOSITY"] = "error"
-
 logging.getLogger("chromadb").setLevel(logging.ERROR)
-logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
-logging.getLogger("transformers").setLevel(logging.ERROR)
-logging.getLogger("torch").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
-# ─────────────────────────────────────────────────────────────────────────────
 
-# chromadb and sentence_transformers imported lazily inside get_chroma() /
-# get_embedder() — avoids loading ~800MB of ML libraries at import time.
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -41,14 +40,18 @@ CHROMA_DIR = Path(__file__).parent.parent / "data" / "chroma_guidelines"
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 COLLECTION_NAME = "clinical_guidelines"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# OpenAI embedding model — smallest/cheapest, still strong on retrieval
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIMS = 1536
 
 _chroma_client = None
 _collection = None
-_embedder = None
+_openai_client = None
 
 
 def get_chroma():
+    """Get or create the ChromaDB collection (persistent, filesystem-backed)."""
     global _chroma_client, _collection
     if _chroma_client is None:
         import chromadb
@@ -64,13 +67,44 @@ def get_chroma():
     return _chroma_client, _collection
 
 
-def get_embedder():
-    global _embedder
-    if _embedder is None:
-        from sentence_transformers import SentenceTransformer
-        print(f"[Embedder] Loading model: {EMBEDDING_MODEL}")
-        _embedder = SentenceTransformer(EMBEDDING_MODEL)
-    return _embedder
+def get_openai_client():
+    """Lazy-load the OpenAI client — only created when first embedding happens."""
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY not set. Required for guideline embeddings. "
+                "Add it to Railway Variables / Render Environment."
+            )
+        _openai_client = OpenAI(api_key=api_key)
+    return _openai_client
+
+
+def embed_texts(texts: list[str], batch_size: int = 100) -> list[list[float]]:
+    """
+    Embed a list of texts using OpenAI's text-embedding-3-small.
+    Batches up to 100 at a time (OpenAI's max per request).
+
+    Returns list of embeddings (each 1536 floats), one per input text.
+    """
+    client = get_openai_client()
+    all_embeddings: list[list[float]] = []
+
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        # OpenAI auto-truncates to 8191 tokens per item; our chunks are ~400 words
+        # so we never hit that limit.
+        response = client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=batch
+        )
+        # Responses come back in the same order as input
+        batch_embeddings = [item.embedding for item in response.data]
+        all_embeddings.extend(batch_embeddings)
+
+    return all_embeddings
 
 
 def embed_source(scraped: dict) -> dict:
@@ -100,7 +134,6 @@ def embed_source(scraped: dict) -> dict:
     print(f"  [Embedder] Embedding {len(chunks)} chunks for {source_id}...")
 
     _, collection = get_chroma()
-    model = get_embedder()
 
     # Delete existing chunks for this source
     try:
@@ -111,14 +144,17 @@ def embed_source(scraped: dict) -> dict:
     except Exception as e:
         print(f"  [Embedder] Warning: could not delete old chunks: {e}")
 
-    # Generate embeddings — normalize_embeddings=True is required for
-    # accurate cosine similarity in ChromaDB (cosine space)
-    embeddings = model.encode(
-        chunks,
-        show_progress_bar=False,
-        normalize_embeddings=True,   # <-- critical for cosine accuracy
-        batch_size=50                # smaller batches = more stable on low RAM
-    ).tolist()
+    # Generate embeddings via OpenAI
+    try:
+        embeddings = embed_texts(chunks)
+    except Exception as e:
+        print(f"  [Embedder] ❌ OpenAI embedding call failed for {source_id}: {e}")
+        return {
+            "source_id": source_id,
+            "status": "skipped",
+            "reason": f"OpenAI API error: {e}",
+            "chunks_embedded": 0
+        }
 
     ids = [f"{source_id}_chunk_{i}" for i in range(len(chunks))]
     metadatas = [
@@ -135,7 +171,7 @@ def embed_source(scraped: dict) -> dict:
         for i in range(len(chunks))
     ]
 
-    # Insert in batches of 50
+    # Insert in smaller batches to avoid ChromaDB transaction size limits
     batch_size = 50
     for batch_start in range(0, len(chunks), batch_size):
         batch_end = min(batch_start + batch_size, len(chunks))
