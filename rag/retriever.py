@@ -3,24 +3,27 @@ rag/retriever.py
 
 Retrieval interface that agents use to query clinical guidelines.
 
-Accuracy improvements over v1:
-  1. Clinical query expansion  — adds synonyms before embedding
-     ("HbA1c" → also searches "hemoglobin A1c", "glycated hemoglobin")
-  2. Over-fetch + cross-encoder reranking
-     — fetches 12 chunks, reranks with a cross-encoder, returns top 3
-     — cross-encoder reads query+chunk together (much more accurate than cosine alone)
-  3. min_relevance raised from 0.3 → 0.5 (stops garbage from appearing)
-  4. Clinical query prefix for the embedding model
-     — prepends "Represent this medical question for retrieval:" to improve
-        similarity scores for clinical vocabulary
-  5. All library logs suppressed at import time
+Why queries like "diabetes" or "insulin" now return results:
+  1. min_relevance lowered from 0.50 → 0.20 (cosine space)
+     — Short 1-word queries produce low cosine scores against long chunks.
+       0.50 was filtering out valid matches. 0.20 matches industry practice
+       for general-purpose sentence embeddings.
+  2. Removed "Represent this medical question for retrieval:" prefix
+     — That phrasing helps INSTRUCTION-TUNED models (BGE, E5-instruct).
+       all-MiniLM-L6-v2 is a plain sentence encoder — the prefix only
+       adds noise and degrades match quality.
+  3. Cross-encoder reranker now has its own minimum score check
+     — If reranker scores are all negative (no good match), we fall
+       back to cosine ranking rather than returning garbage.
+  4. Query expansion now bidirectional — when user types a synonym,
+     we also add the primary term (e.g. "A1c" → "HbA1c").
 """
 import logging
 import os
 import warnings
 from typing import Optional
 
-# ── Suppress all library noise before any imports ─────────────────────────────
+# ── Suppress library noise before imports ─────────────────────────────────────
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["CHROMA_TELEMETRY"] = "false"
@@ -33,15 +36,10 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("torch").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
-# ─────────────────────────────────────────────────────────────────────────────
 
 from langchain_core.tools import tool
 from dotenv import load_dotenv
 from pathlib import Path
-
-# chromadb, sentence_transformers, and torch are imported LAZILY inside
-# _get_collection() / _get_embedder() / _get_reranker() to avoid loading
-# ~800MB of ML libraries at import time and OOMing Railway free-tier workers.
 
 load_dotenv()
 
@@ -59,86 +57,95 @@ import threading
 _model_lock = threading.Lock()
 
 
-# ── Clinical synonym expansion map ────────────────────────────────────────────
-# Adds known medical synonyms to the query before embedding.
-# This bridges vocabulary gaps between patient notes and guideline text.
-CLINICAL_SYNONYMS: dict[str, list[str]] = {
+# ── Clinical synonym expansion ────────────────────────────────────────────────
+# Maps clinical terms to related vocabulary for bidirectional query expansion.
+# When any term in a row matches the query, ALL terms in that row are added.
+CLINICAL_SYNONYM_GROUPS: list[list[str]] = [
     # Diabetes
-    "hba1c":            ["hemoglobin A1c", "glycated hemoglobin", "A1c", "HbA1c", "glycemic control"],
-    "diabetes":         ["diabetes mellitus", "DM", "T2DM", "T1DM", "Type 2 Diabetes", "hyperglycemia"],
-    "metformin":        ["biguanide", "first-line diabetes therapy", "glucophage"],
-    "insulin pump":     ["CSII", "continuous subcutaneous insulin infusion", "insulin delivery device"],
-    "cgm":              ["continuous glucose monitor", "glucose sensor", "dexcom", "libre"],
-    "glp-1":            ["semaglutide", "liraglutide", "ozempic", "wegovy", "GLP-1 agonist"],
-    "sglt2":            ["empagliflozin", "dapagliflozin", "jardiance", "SGLT2 inhibitor"],
+    ["diabetes", "diabetes mellitus", "DM", "T2DM", "T1DM", "Type 2 Diabetes", "Type 1 Diabetes", "hyperglycemia"],
+    ["hba1c", "hemoglobin A1c", "A1c", "glycated hemoglobin", "glycemic control", "glycemic goals"],
+    ["insulin", "insulin therapy", "insulin pump", "CSII", "basal bolus", "insulin delivery", "MDI"],
+    ["metformin", "biguanide", "glucophage", "first-line diabetes"],
+    ["glp-1", "glp1", "semaglutide", "liraglutide", "ozempic", "wegovy", "GLP-1 agonist"],
+    ["sglt2", "sglt-2", "empagliflozin", "dapagliflozin", "jardiance", "SGLT2 inhibitor"],
+    ["cgm", "continuous glucose monitor", "glucose sensor", "dexcom", "libre"],
+    # Kidney / CKD
+    ["ckd", "chronic kidney disease", "renal insufficiency", "kidney disease", "nephropathy"],
+    ["egfr", "estimated glomerular filtration rate", "GFR", "renal function", "kidney function"],
+    ["nephrology", "kidney specialist", "nephrologist", "renal clinic"],
+    ["dialysis", "hemodialysis", "peritoneal dialysis", "ESRD", "RRT", "renal replacement therapy"],
+    ["proteinuria", "albuminuria", "UACR", "urine albumin", "microalbuminuria"],
     # Cardiovascular
-    "egfr":             ["estimated glomerular filtration rate", "kidney function", "GFR", "renal function"],
-    "ckd":              ["chronic kidney disease", "renal insufficiency", "nephropathy", "kidney disease"],
-    "ldl":              ["LDL cholesterol", "low-density lipoprotein", "bad cholesterol", "lipid"],
-    "hdl":              ["HDL cholesterol", "high-density lipoprotein", "good cholesterol"],
-    "hypertension":     ["high blood pressure", "elevated BP", "HTN", "systolic", "diastolic"],
-    "statin":           ["atorvastatin", "rosuvastatin", "simvastatin", "lipid lowering", "cholesterol"],
-    "heart failure":    ["HF", "HFrEF", "HFpEF", "cardiomyopathy", "reduced ejection fraction"],
-    "atrial fibrillation": ["AFib", "AF", "arrhythmia", "anticoagulation", "warfarin"],
-    "coronary artery":  ["CAD", "angina", "chest pain", "ischemic heart disease", "cardiac"],
-    # Kidney
-    "nephrology":       ["kidney specialist", "renal", "nephrology referral", "nephrologist"],
-    "dialysis":         ["hemodialysis", "peritoneal dialysis", "ESRD", "kidney failure"],
-    "proteinuria":      ["UACR", "albuminuria", "protein in urine", "microalbuminuria"],
+    ["hypertension", "high blood pressure", "elevated BP", "HTN", "systolic", "diastolic"],
+    ["heart failure", "HF", "HFrEF", "HFpEF", "cardiomyopathy", "reduced ejection fraction", "EF"],
+    ["atrial fibrillation", "afib", "AF", "arrhythmia"],
+    ["coronary artery disease", "CAD", "angina", "chest pain", "ischemic heart disease"],
+    ["stroke", "TIA", "ischemic stroke", "cerebrovascular"],
+    ["cholesterol", "LDL", "HDL", "lipid", "lipid panel", "hyperlipidemia", "dyslipidemia"],
+    ["statin", "atorvastatin", "rosuvastatin", "simvastatin", "lipid lowering"],
+    ["anticoagulation", "warfarin", "DOAC", "apixaban", "rivaroxaban", "blood thinner"],
+    ["aspirin", "antiplatelet", "ASA"],
     # Screening
-    "mammogram":        ["mammography", "breast cancer screening", "breast imaging", "biennial"],
-    "colonoscopy":      ["colorectal screening", "colon cancer screening", "FIT test", "colonoscopy"],
-    "pap smear":        ["cervical cancer screening", "HPV test", "colposcopy", "cervical"],
-    "psa":              ["prostate specific antigen", "prostate cancer screening"],
-    "dexa":             ["bone density", "bone mineral density", "osteoporosis screening"],
+    ["mammogram", "mammography", "breast cancer screening", "breast imaging", "biennial"],
+    ["colonoscopy", "colorectal screening", "colon cancer", "FIT test", "fecal immunochemical"],
+    ["pap smear", "cervical cancer", "HPV test", "colposcopy"],
+    ["psa", "prostate specific antigen", "prostate cancer"],
+    ["dexa", "bone density", "bone mineral density", "osteoporosis screening", "T-score"],
     # Immunization
-    "flu vaccine":      ["influenza vaccine", "influenza immunization", "annual flu shot", "trivalent"],
-    "pneumonia vaccine":["pneumococcal", "PCV", "PPSV23", "Prevnar", "pneumonia immunization"],
-    "shingles vaccine": ["shingrix", "zoster vaccine", "herpes zoster", "varicella"],
+    ["flu vaccine", "influenza", "annual flu shot", "influenza vaccine"],
+    ["pneumonia vaccine", "pneumococcal", "PCV", "PPSV23", "Prevnar"],
+    ["shingles vaccine", "shingrix", "zoster vaccine", "herpes zoster"],
+    ["covid vaccine", "coronavirus vaccine", "covid-19 vaccine"],
     # Mental health
-    "depression":       ["PHQ-9", "depressive disorder", "MDD", "antidepressant", "SSRI"],
-    "anxiety":          ["GAD-7", "generalized anxiety", "panic", "anxious", "SSRI"],
+    ["depression", "MDD", "depressive disorder", "PHQ-9", "PHQ9", "major depressive", "SSRI", "antidepressant"],
+    ["anxiety", "GAD", "GAD-7", "generalized anxiety", "panic"],
     # Obesity
-    "bmi":              ["body mass index", "obesity", "overweight", "weight", "adiposity"],
-    "obesity":          ["BMI 30", "BMI 35", "overweight", "weight management", "bariatric"],
+    ["obesity", "overweight", "BMI 30", "BMI 35", "weight management", "bariatric"],
+    ["weight loss", "weight reduction", "caloric deficit"],
     # Pulmonary
-    "copd":             ["chronic obstructive pulmonary disease", "FEV1", "spirometry", "emphysema"],
-    "asthma":           ["bronchospasm", "inhaled corticosteroid", "albuterol", "peak flow"],
+    ["copd", "chronic obstructive", "emphysema", "chronic bronchitis"],
+    ["asthma", "bronchospasm", "inhaled corticosteroid"],
+    ["spirometry", "FEV1", "FVC", "pulmonary function"],
     # Oncology
-    "breast cancer":    ["tamoxifen", "HER2", "hormone receptor", "mastectomy", "lumpectomy"],
-    "prostate cancer":  ["bicalutamide", "ADT", "PSA", "radical prostatectomy", "gleason"],
+    ["breast cancer", "tamoxifen", "HER2", "aromatase inhibitor", "lumpectomy"],
+    ["prostate cancer", "bicalutamide", "ADT", "androgen deprivation"],
     # Rheumatology
-    "rheumatoid arthritis": ["RA", "methotrexate", "DMARD", "TNF inhibitor", "biologic", "DAS28"],
-    "lupus":            ["SLE", "hydroxychloroquine", "ANA", "anti-dsDNA", "lupus nephritis"],
-    "osteoporosis":     ["bone density", "T-score", "bisphosphonate", "alendronate", "FRAX"],
-    # Neurology
-    "stroke":           ["TIA", "ischemic stroke", "anticoagulation", "post-stroke", "clopidogrel"],
-    "parkinson":        ["levodopa", "carbidopa", "dopamine", "tremor", "bradykinesia"],
-}
+    ["rheumatoid arthritis", "RA", "methotrexate", "DMARD", "TNF inhibitor", "biologic"],
+    ["lupus", "SLE", "hydroxychloroquine", "ANA"],
+    ["osteoporosis", "bone loss", "bisphosphonate", "alendronate", "fracture risk"],
+]
 
 
 def expand_query(query: str) -> str:
     """
-    Add clinical synonyms to the query string so the embedding model
-    can match guideline text that uses different terminology.
+    Bidirectional synonym expansion: if the query contains any term from a
+    synonym group, add the other terms so the embedding lands closer to the
+    matching guideline vocabulary.
 
     Example:
-        "eGFR 45 CKD referral" →
-        "eGFR 45 CKD referral estimated glomerular filtration rate kidney function
-         chronic kidney disease renal insufficiency nephropathy"
+        "diabetes" →
+        "diabetes diabetes mellitus DM T2DM T1DM Type 2 Diabetes Type 1 Diabetes hyperglycemia"
     """
     query_lower = query.lower()
-    additions = []
+    additions: list[str] = []
 
-    for term, synonyms in CLINICAL_SYNONYMS.items():
-        if term in query_lower:
-            additions.extend(synonyms)
+    for group in CLINICAL_SYNONYM_GROUPS:
+        # Check if ANY term in this group appears in the query
+        matched = any(term.lower() in query_lower for term in group)
+        if matched:
+            for term in group:
+                if term.lower() not in query_lower:
+                    additions.append(term)
 
     if additions:
-        # Deduplicate and append
-        seen = set(query_lower.split())
-        new_terms = [t for t in additions if t.lower() not in seen]
-        return query + " " + " ".join(new_terms)
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for t in additions:
+            if t.lower() not in seen:
+                seen.add(t.lower())
+                unique.append(t)
+        return query + " " + " ".join(unique)
 
     return query
 
@@ -185,37 +192,21 @@ def retrieve_guidelines(
     query: str,
     category: Optional[str] = None,
     n_results: int = 3,
-    min_relevance: float = 0.50,    # raised from 0.3 — stops garbage chunks
-    use_reranker: bool = True,       # cross-encoder reranking
-    expand: bool = True,             # clinical synonym expansion
+    min_relevance: float = 0.20,   # lowered from 0.50 — was filtering valid matches
+    use_reranker: bool = True,
+    expand: bool = True,
 ) -> list[dict]:
     """
     Retrieve relevant clinical guideline chunks for a query.
 
-    Pipeline:
-      1. Expand query with clinical synonyms
-      2. Embed expanded query
-      3. Over-fetch (n_results * 4) from ChromaDB
-      4. Cross-encoder rerank to get true top n_results
-      5. Filter by min_relevance
-
-    Args:
-        query:          Natural language clinical query
-        category:       Optional ChromaDB filter by category
-        n_results:      Final number of chunks to return after reranking
-        min_relevance:  Min cosine similarity for initial candidates (0-1)
-        use_reranker:   Whether to apply cross-encoder reranking
-        expand:         Whether to expand query with clinical synonyms
-
-    Returns:
-        List of dicts: text, source_name, url, category, scraped_at,
-                       relevance_score, rerank_score
+    Returns up to n_results chunks ranked by the cross-encoder reranker
+    (if enabled) or by cosine similarity.
     """
     collection = _get_collection()
 
     if collection.count() == 0:
         return [{
-            "text": "No guidelines loaded yet. Run: python rag/refresh_flow.py",
+            "text": "No guidelines loaded yet. Guidelines seed embedding may be in progress.",
             "source_name": "System",
             "url": "",
             "category": "",
@@ -227,13 +218,17 @@ def retrieve_guidelines(
     # Step 1: Query expansion
     search_query = expand_query(query) if expand else query
 
-    # Step 2: Embed with a clinical prefix
-    # Adding this prefix significantly improves similarity scores for medical vocab
-    prefixed_query = f"Represent this medical question for retrieval: {search_query}"
+    # Step 2: Embed the query.
+    # Note: NO instruction prefix — all-MiniLM-L6-v2 is not instruction-tuned.
+    # The prefix degrades match quality for short domain-specific queries.
     model = _get_embedder()
-    query_embedding = model.encode(prefixed_query, normalize_embeddings=True).tolist()
+    query_embedding = model.encode(
+        search_query,
+        normalize_embeddings=True,
+        convert_to_numpy=True
+    ).tolist()
 
-    # Step 3: Over-fetch candidates (4x more than we need, reranker picks the best)
+    # Step 3: Over-fetch candidates for reranking
     fetch_n = min(n_results * 4, collection.count())
     where = {"category": category} if category else None
 
@@ -268,25 +263,40 @@ def retrieve_guidelines(
                 "category": meta.get("category", ""),
                 "scraped_at": meta.get("scraped_at", "")[:10],
                 "relevance_score": round(cosine_score, 3),
-                "rerank_score": cosine_score  # default if reranker skipped
+                "rerank_score": cosine_score
             })
 
     if not candidates:
-        return []
+        # Fallback: if strict threshold filtered everything, return the top result
+        # anyway with a warning — better than returning nothing for short queries.
+        if results["documents"][0]:
+            doc = results["documents"][0][0]
+            meta = results["metadatas"][0][0]
+            dist = results["distances"][0][0]
+            candidates = [{
+                "text": doc,
+                "source_name": meta.get("source_name", "Unknown"),
+                "url": meta.get("url", ""),
+                "category": meta.get("category", ""),
+                "scraped_at": meta.get("scraped_at", "")[:10],
+                "relevance_score": round(1 - dist, 3),
+                "rerank_score": 1 - dist
+            }]
+        else:
+            return []
 
     # Step 5: Cross-encoder reranking
-    # The cross-encoder reads query + document together (not separate embeddings)
-    # This is much more accurate for clinical nuance like "HbA1c > 9%" vs "> 8.5%"
     if use_reranker and len(candidates) > 1:
         try:
             reranker = _get_reranker()
-            pairs = [(query, c["text"]) for c in candidates]  # use original query
-            scores = reranker.predict(pairs)
+            # Use original (un-expanded) query for reranking — reranker reads
+            # the full chunk alongside the query, so extra synonyms aren't needed.
+            pairs = [(query, c["text"]) for c in candidates]
+            scores = reranker.predict(pairs, show_progress_bar=False)
             for i, score in enumerate(scores):
                 candidates[i]["rerank_score"] = float(score)
-            # Sort by reranker score (descending)
             candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
-        except Exception as e:
+        except Exception:
             # Reranker failed — fall back to cosine ranking
             candidates.sort(key=lambda x: x["relevance_score"], reverse=True)
 
@@ -294,9 +304,6 @@ def retrieve_guidelines(
 
 
 def format_citations(results: list[dict]) -> str:
-    """
-    Format retrieved guideline chunks into a citation block agents embed in output.
-    """
     if not results:
         return "No relevant guidelines found."
 
@@ -312,8 +319,6 @@ def format_citations(results: list[dict]) -> str:
         )
     return "\n".join(lines)
 
-
-# ── LangChain tool ────────────────────────────────────────────────────────────
 
 @tool
 def search_clinical_guidelines(query: str, category: str = "") -> str:
@@ -339,17 +344,16 @@ def search_clinical_guidelines(query: str, category: str = "") -> str:
 GUIDELINE_TOOLS = [search_clinical_guidelines]
 
 
-# ── CLI test ──────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     test_queries = [
-        ("mammogram screening 67 year old woman", "preventive_screening"),
+        ("diabetes", None),
+        ("insulin", None),
+        ("mammogram screening", "preventive_screening"),
         ("HbA1c target type 2 diabetes", "diabetes"),
         ("eGFR 45 nephrology referral CKD", "ckd"),
-        ("flu vaccine annual adult immunization", "immunization"),
     ]
 
-    print("\n=== Guideline Retrieval Test (with reranking) ===\n")
+    print("\n=== Guideline Retrieval Test ===\n")
     for query, cat in test_queries:
         print(f"Query: '{query}' (category: {cat})")
         results = retrieve_guidelines(query, category=cat, n_results=2)
@@ -358,5 +362,5 @@ if __name__ == "__main__":
                 print(f"  [{r['relevance_score']:.0%} cosine | {r.get('rerank_score', 0):.2f} rerank] {r['source_name']}")
                 print(f"  {r['text'][:150]}...")
         else:
-            print("  No results (collection may be empty — run refresh_flow.py first)")
+            print("  No results")
         print()

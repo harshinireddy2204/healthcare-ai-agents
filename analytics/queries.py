@@ -3,13 +3,15 @@ analytics/queries.py
 
 SQL analytics layer for healthcare AI agent reporting.
 
-Demonstrates: complex SQL, data aggregation, cohort analysis,
-and operational metrics — directly mapping to the "ad hoc analytics
-and custom SQL queries" requirement in the JD.
+Path-safety note:
+  Both api/main.py (writer) and this module (reader) use the same
+  DATABASE_URL env var with the same default. The get_engine() helper
+  uses check_same_thread=False for SQLite so concurrent FastAPI requests
+  can all read from the same file.
 
-These queries run against the audit_log and review_queue tables
-and can be adapted to any data warehouse (PostgreSQL, Snowflake,
-BigQuery) by changing the DATABASE_URL environment variable.
+  On Railway/Render: SQLite is ephemeral (wiped on redeploy). The API
+  seeds demo data on startup if audit_log is empty, so analytics pages
+  always have content for demo visitors.
 """
 import os
 import json
@@ -25,22 +27,26 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./healthcare_agents.db")
 
 
 def get_engine():
-    return create_engine(DATABASE_URL, connect_args={"check_same_thread": False}
-                         if "sqlite" in DATABASE_URL else {})
+    """
+    Create an engine with SQLite-safe settings matching api/main.py.
+    check_same_thread=False is required so FastAPI's threadpool can
+    share the connection with background tasks.
+    """
+    return create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
+        pool_pre_ping=True,  # detect stale connections on long-running services
+    )
 
 
 # ── Operational metrics ───────────────────────────────────────────────────────
 
 def get_agent_performance_summary(days: int = 30) -> dict:
-    """
-    Overall agent performance metrics for the last N days.
-    Maps to: management dashboard / C-suite reporting.
-    """
+    """Overall agent performance metrics for the last N days."""
     engine = get_engine()
     since = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
     with engine.connect() as conn:
-        # Total runs and status breakdown
         result = conn.execute(text("""
             SELECT
                 COUNT(*)                                           AS total_runs,
@@ -67,11 +73,7 @@ def get_agent_performance_summary(days: int = 30) -> dict:
 
 
 def get_prior_auth_metrics(days: int = 30) -> dict:
-    """
-    Prior authorization decision metrics — approval rate, escalation rate,
-    average confidence by decision type.
-    Maps to: payer analytics reporting.
-    """
+    """Prior authorization decision metrics."""
     engine = get_engine()
     since = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
@@ -91,7 +93,31 @@ def get_prior_auth_metrics(days: int = 30) -> dict:
     for (result_json,) in rows:
         try:
             result = json.loads(result_json) if result_json else {}
-            auth_results = result.get("auth_results", [])
+
+            # auth_results can live in two places:
+            #  - direct key for auth_only mode
+            #  - nested inside workflow_results for full mode
+            auth_results = (
+                result.get("auth_results") or
+                result.get("workflow_results", {}).get("auth_results", [])
+            )
+
+            # Also scan crew_output for embedded PRIOR AUTH JSON in full mode
+            if not auth_results:
+                crew = result.get("crew_output", "")
+                if "PRIOR AUTH:" in crew:
+                    auth_section = crew.split("PRIOR AUTH:", 1)[1]
+                    # Get the JSON array portion before the next section
+                    for sep in ["SYNTHESIS:", "KNOWLEDGE GRAPH:", "CARE GAPS:"]:
+                        if sep in auth_section:
+                            auth_section = auth_section.split(sep, 1)[0]
+                    auth_section = auth_section.strip()
+                    if auth_section.startswith("["):
+                        try:
+                            auth_results = json.loads(auth_section)
+                        except Exception:
+                            pass
+
             for r in auth_results:
                 d = r.get("decision", "")
                 if d in decisions:
@@ -119,11 +145,8 @@ def get_prior_auth_metrics(days: int = 30) -> dict:
     }
 
 
-def get_care_gap_metrics(days: int = 30) -> list:
-    """
-    Care gap identification metrics — most common gaps, closure rates.
-    Maps to: population health analytics reporting.
-    """
+def get_care_gap_metrics(days: int = 30) -> dict:
+    """Care gap identification metrics."""
     engine = get_engine()
     since = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
@@ -131,22 +154,29 @@ def get_care_gap_metrics(days: int = 30) -> list:
         rows = conn.execute(text("""
             SELECT patient_id, result_json
             FROM audit_log
-            WHERE status = 'COMPLETED'
+            WHERE status IN ('COMPLETED', 'PENDING_REVIEW')
             AND processed_at >= :since
         """), {"since": since}).fetchall()
 
     gap_counts = {}
-    patients_with_gaps = 0
+    patients_with_gaps = set()
     total_gaps = 0
+    patients_analyzed = set()
 
     for (patient_id, result_json) in rows:
+        patients_analyzed.add(patient_id)
         try:
             result = json.loads(result_json) if result_json else {}
-            report = result.get("final_report", "")
-            if not report:
+
+            # Collect all report text — scan both final_report and crew_output
+            report_text = result.get("final_report", "") + " " + result.get("crew_output", "")
+            # Also check nested workflow_results
+            wf = result.get("workflow_results", {})
+            report_text += " " + wf.get("care_summary", "")
+
+            if not report_text.strip():
                 continue
 
-            # Count gap mentions in reports
             gap_keywords = {
                 "mammogram": "Breast Cancer Screening",
                 "colonoscopy": "Colorectal Screening",
@@ -157,27 +187,34 @@ def get_care_gap_metrics(days: int = 30) -> list:
                 "cholesterol": "Lipid Screening",
                 "depression": "Depression Screening",
                 "bone density": "Bone Density Screening",
+                "dexa": "Bone Density Screening",
+                "cardiology": "Cardiology Referral",
+                "fall risk": "Falls Prevention",
             }
 
-            found_gap = False
+            report_lower = report_text.lower()
+            found_gaps = set()
             for keyword, label in gap_keywords.items():
-                if keyword.lower() in report.lower():
-                    gap_counts[label] = gap_counts.get(label, 0) + 1
-                    total_gaps += 1
-                    found_gap = True
+                if keyword in report_lower:
+                    found_gaps.add(label)
 
-            if found_gap:
-                patients_with_gaps += 1
+            for label in found_gaps:
+                gap_counts[label] = gap_counts.get(label, 0) + 1
+                total_gaps += 1
+
+            if found_gaps:
+                patients_with_gaps.add(patient_id)
         except Exception:
             pass
 
+    patients_count = len(patients_analyzed) or 1
     return {
-        "patients_analyzed": len(rows),
-        "patients_with_gaps": patients_with_gaps,
+        "patients_analyzed": len(patients_analyzed),
+        "patients_with_gaps": len(patients_with_gaps),
         "total_gaps_identified": total_gaps,
-        "avg_gaps_per_patient": round(total_gaps / max(len(rows), 1), 1),
+        "avg_gaps_per_patient": round(total_gaps / patients_count, 1),
         "gap_frequency": sorted(
-            [{"gap": k, "count": v, "pct": round(v / max(len(rows), 1) * 100, 1)}
+            [{"gap": k, "count": v, "pct": round(v / patients_count * 100, 1)}
              for k, v in gap_counts.items()],
             key=lambda x: x["count"],
             reverse=True
@@ -186,11 +223,7 @@ def get_care_gap_metrics(days: int = 30) -> list:
 
 
 def get_complexity_distribution(days: int = 30) -> dict:
-    """
-    MDAgents complexity routing distribution — shows cost savings
-    from routing simple cases to single agents vs full CrewAI team.
-    Maps to: ROI reporting / cost analysis.
-    """
+    """MDAgents complexity routing distribution."""
     engine = get_engine()
     since = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
@@ -202,7 +235,6 @@ def get_complexity_distribution(days: int = 30) -> dict:
         """), {"since": since}).fetchall()
 
     tiers = {"LOW": 0, "MODERATE": 0, "HIGH": 0}
-    # Approximate token costs per tier
     token_cost = {"LOW": 2000, "MODERATE": 8000, "HIGH": 20000}
 
     for (result_json,) in rows:
@@ -231,28 +263,20 @@ def get_complexity_distribution(days: int = 30) -> dict:
 
 
 def get_patient_cohort_analysis() -> list:
-    """
-    Patient cohort analysis — groups patients by condition clusters
-    and shows care gap burden per cohort.
-    Maps to: population health / value-based care reporting.
-
-    This is a SQL-heavy query that demonstrates complex aggregation
-    and cohort segmentation skills.
-    """
-    import json as _json
+    """Patient cohort analysis grouped by condition clusters."""
     try:
         with open("data/synthetic_patients.json") as f:
-            patients = _json.load(f)
+            patients = json.load(f)
     except Exception:
         return []
 
     cohorts = {
-        "Diabetic + CKD": {"conditions": ["Type 2 Diabetes", "CKD"], "patients": [], "risk_scores": []},
-        "Cardiovascular Complex": {"conditions": ["Heart Failure", "Atrial Fibrillation", "Coronary Artery Disease"], "patients": [], "risk_scores": []},
-        "Oncology": {"conditions": ["Cancer", "cancer"], "patients": [], "risk_scores": []},
-        "Metabolic Syndrome": {"conditions": ["Obesity", "Hypertension", "Hyperlipidemia"], "patients": [], "risk_scores": []},
-        "Autoimmune": {"conditions": ["Rheumatoid Arthritis", "Lupus", "Crohn"], "patients": [], "risk_scores": []},
-        "Other": {"conditions": [], "patients": [], "risk_scores": []},
+        "Diabetic + CKD": {"conditions": ["Type 2 Diabetes", "CKD"], "patients": []},
+        "Cardiovascular Complex": {"conditions": ["Heart Failure", "Atrial Fibrillation", "Coronary Artery Disease"], "patients": []},
+        "Oncology": {"conditions": ["Cancer", "cancer"], "patients": []},
+        "Metabolic Syndrome": {"conditions": ["Obesity", "Hypertension", "Hyperlipidemia"], "patients": []},
+        "Autoimmune": {"conditions": ["Rheumatoid Arthritis", "Lupus", "Crohn"], "patients": []},
+        "Other": {"conditions": [], "patients": []},
     }
 
     for p in patients:
@@ -283,23 +307,12 @@ def get_patient_cohort_analysis() -> list:
 
 
 def get_review_queue_sla_metrics() -> dict:
-    """
-    SLA compliance for the HITL review queue — time-to-review,
-    overdue cases, reviewer patterns.
-    Maps to: operations management reporting.
-    """
+    """SLA compliance for the HITL review queue."""
     engine = get_engine()
 
     with engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT
-                id,
-                patient_id,
-                created_at,
-                resolved_at,
-                status,
-                resolved_by,
-                resolution
+            SELECT id, patient_id, created_at, resolved_at, status, resolved_by, resolution
             FROM review_queue
             ORDER BY created_at DESC
             LIMIT 100
@@ -316,8 +329,8 @@ def get_review_queue_sla_metrics() -> dict:
         if row[4] == "RESOLVED" and row[2] and row[3]:
             try:
                 created = datetime.fromisoformat(row[2])
-                resolved = datetime.fromisoformat(row[3])
-                hours = (resolved - created).total_seconds() / 3600
+                resolved_dt = datetime.fromisoformat(row[3])
+                hours = (resolved_dt - created).total_seconds() / 3600
                 review_times.append(hours)
             except Exception:
                 pass
@@ -346,3 +359,5 @@ if __name__ == "__main__":
     print(json.dumps(get_prior_auth_metrics(), indent=2))
     print("\n=== Complexity Distribution ===")
     print(json.dumps(get_complexity_distribution(), indent=2))
+    print("\n=== Care Gap Metrics ===")
+    print(json.dumps(get_care_gap_metrics(), indent=2))

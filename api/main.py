@@ -106,6 +106,20 @@ def _seed_guidelines_if_empty():
 def on_startup():
     init_db()
 
+    # Seed demo data if audit_log is empty (fresh deploy / Railway restart).
+    # This is idempotent — live runs that happened after deploy are preserved.
+    try:
+        with engine.connect() as conn:
+            row_count = conn.execute(text("SELECT COUNT(*) FROM audit_log")).scalar() or 0
+        if row_count == 0:
+            print("[Startup] audit_log is empty — seeding demo data...")
+            from scripts.reset_demo_data import reset_demo_data
+            reset_demo_data()
+        else:
+            print(f"[Startup] audit_log has {row_count} rows — skipping demo seed")
+    except Exception as e:
+        print(f"[Startup] Warning: could not seed demo data: {e}")
+
     # Validate OpenAI credentials immediately so bad configs fail loud
     # instead of failing silently when the first user triggers a workflow.
     try:
