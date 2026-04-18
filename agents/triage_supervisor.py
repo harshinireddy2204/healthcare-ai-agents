@@ -33,6 +33,33 @@ load_dotenv()
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.75"))
 
 
+# ── TPM headroom wait ─────────────────────────────────────────────────────────
+
+def _tpm_wait_for_headroom(needed: int = 30000, label: str = ""):
+    """
+    Block until the local token budget has `needed` tokens of headroom,
+    then sleep an extra 15s to absorb OpenAI-local tracker drift.
+
+    Replaces fixed-duration sleeps between care gap and prior auth. Adapts
+    to actual care gap duration instead of guessing worst-case upfront.
+    """
+    import time
+    from utils.llm_utils import _budget
+
+    waited = 0
+    while _budget.available() < needed and waited < 300:
+        if waited == 0:
+            print(f"  [{label}] Waiting for TPM headroom ({needed} tokens needed)...")
+        time.sleep(5)
+        waited += 5
+
+    if waited > 0:
+        print(f"  [{label}] Headroom available after {waited}s. Adding 15s drift buffer...")
+    else:
+        print(f"  [{label}] TPM headroom available. Adding 15s drift buffer before auth...")
+    time.sleep(15)
+
+
 # ── Timeout helper ────────────────────────────────────────────────────────────
 
 def _run_with_timeout(fn, args=(), timeout_seconds=90, fallback=None):
@@ -232,6 +259,10 @@ def _run_low_complexity(patient_id: str, profile: dict) -> dict:
     except Exception as e:
         results["care_gaps"] = {"error": str(e)}
 
+    # Wait for TPM headroom before prior auth — care gap drains ~180k tokens
+    # even on the LOW pathway, which exhausts the 200k free-tier budget.
+    _tpm_wait_for_headroom(needed=120000, label="LOW")
+
     # Auth requests if any
     if profile["pending"]:
         auth_results = []
@@ -312,12 +343,10 @@ def _run_moderate_complexity(patient_id: str) -> dict:
     except Exception as e:
         print(f"  [MODERATE] Care gap error: {e}")
 
-    # Wait 90s between care gap and prior auth so the full TPM window flushes.
-    # OpenAI TPM is a 60s sliding window. Care gap runs ~90s and uses ~190k/200k
-    # tokens. After the run ends, the last 60s of tokens are still in the window.
-    # 90s ensures ALL care gap tokens roll off before auth starts.
-    print(f"  [MODERATE] Pausing 90s to allow TPM window to fully flush before auth...")
-    time.sleep(90)
+    # Wait until the local token budget shows enough headroom for prior auth
+    # (~30k tokens), then add a 15s buffer for OpenAI-local tracker drift.
+    # This adapts to how long care gap actually took rather than a fixed guess.
+    _tpm_wait_for_headroom(needed=120000, label="MODERATE")
 
     # Step 4: Prior auth via LangGraph (with Agent/Critic)
     # Note: rate limits are now handled automatically by llm_invoke retry logic.
@@ -460,9 +489,8 @@ def _run_high_complexity(patient_id: str) -> dict:
         from agents.prior_auth_agent import run_prior_auth
         from tools.ehr_tools import get_pending_auth_requests
         pending = get_pending_auth_requests.invoke({"patient_id": patient_id})
-        # Same TPM flush pause as MODERATE — see comment there for rationale
-        print(f"  [HIGH] Pausing 90s to allow TPM window to fully flush before auth...")
-        time.sleep(90)
+        # Same adaptive wait as MODERATE — see comment there for rationale
+        _tpm_wait_for_headroom(needed=30000, label="HIGH")
         for req in (pending or [])[:2]:
             if isinstance(req, dict) and "request_id" in req:
                 _fallback = {

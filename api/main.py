@@ -2,6 +2,16 @@
 api/main.py
 
 FastAPI service — REST interface for the healthcare AI agent system.
+
+Two-mode access control:
+  Public endpoints (no auth): health, audit-log, pending-reviews, workflow-status,
+                              analytics, guidelines-status, guidelines-search,
+                              diagnostics, resolve-review
+  Passcode-gated endpoints:   /process-patient, /refresh-guidelines
+                              (these consume OpenAI tokens)
+
+Set DEMO_PASSCODE env var to enable live runs. If unset, live runs are rejected
+with HTTP 403 and the app runs in demo-only mode (cached data + free APIs only).
 """
 import json
 import os
@@ -26,6 +36,71 @@ app = FastAPI(
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./healthcare_agents.db")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+
+# ── Passcode gate for token-burning endpoints ─────────────────────────────────
+#
+# Only /process-patient and /refresh-guidelines consume OpenAI tokens per call.
+# Everything else (SQLite reads, OpenFDA, FHIR, Knowledge Graph, guideline
+# SEARCH) is free or negligible. We gate those two endpoints behind a passcode
+# so the shared OpenAI budget isn't drained by drive-by traffic.
+#
+# The automatic startup seed embedding (~$0.001 per deploy) is NOT gated — it
+# runs once on boot without a passcode because without it, RAG is dead.
+# Similarly, the frontend's empty-ChromaDB recovery fallback is not gated.
+
+DEMO_PASSCODE = os.getenv("DEMO_PASSCODE", "").strip()
+
+
+def _check_passcode(provided: Optional[str]) -> tuple[bool, str]:
+    """
+    Validate a provided passcode against DEMO_PASSCODE.
+    Returns (is_valid, error_message). If DEMO_PASSCODE is unset, always rejects
+    (demo-only mode). Uses constant-time comparison to prevent timing attacks.
+    """
+    if not DEMO_PASSCODE:
+        return False, (
+            "Live agent workflows are disabled on this deployment "
+            "(DEMO_PASSCODE env var not set). Explore the cached demo runs "
+            "in 'Example workflow outputs' and all other dashboard pages — "
+            "they're fully functional."
+        )
+
+    if not provided:
+        return False, "Passcode required. Contact the deployment owner for access."
+
+    # Constant-time comparison
+    import hmac
+    if not hmac.compare_digest(provided.strip(), DEMO_PASSCODE):
+        return False, "Incorrect passcode."
+
+    return True, ""
+
+
+# ── Demo workflow cache ────────────────────────────────────────────────────────
+# Pre-recorded workflow outputs served from data/demo_runs.json so visitors
+# can see complete agent output without burning tokens. Regenerate with
+# `python scripts/generate_demo_runs.py`.
+
+_DEMO_RUNS: dict = {}
+
+
+def _load_demo_runs():
+    """Load pre-recorded workflow outputs at startup."""
+    global _DEMO_RUNS
+    from pathlib import Path
+    demo_path = Path("data/demo_runs.json")
+    if demo_path.exists():
+        try:
+            with open(demo_path) as f:
+                _DEMO_RUNS = json.load(f)
+            print(f"[Startup] ✅ Loaded {len(_DEMO_RUNS)} cached demo workflow runs")
+        except Exception as e:
+            print(f"[Startup] Could not load demo_runs.json: {e}")
+            _DEMO_RUNS = {}
+    else:
+        print("[Startup] data/demo_runs.json not found — cached demo runs unavailable")
+        _DEMO_RUNS = {}
 
 
 # ── Database setup ────────────────────────────────────────────────────────────
@@ -62,16 +137,8 @@ def init_db():
 def _seed_guidelines_if_empty():
     """
     Embed hardcoded seed guidelines into ChromaDB if the collection is empty.
-
-    This runs at startup and guarantees agents always have RAG access,
-    even on Railway/Render where the filesystem is ephemeral.
-
-    The seed covers 20 clinical guideline excerpts across:
-    diabetes, CKD, cardiovascular, preventive screening, immunization,
-    oncology, mental health, rheumatology, pulmonary, and geriatrics.
-
-    The full scraping pipeline (rag/refresh_flow.py) will replace/augment
-    these seeds with fresher content when triggered manually or on schedule.
+    Runs once on startup. Costs ~$0.001 per deploy — essential for RAG to work.
+    This is NOT passcode-gated because agents need it to function.
     """
     try:
         from rag.embedder import get_collection_stats, embed_source
@@ -106,8 +173,16 @@ def _seed_guidelines_if_empty():
 def on_startup():
     init_db()
 
+    # Load demo runs cache
+    _load_demo_runs()
+
+    # Report passcode mode
+    if DEMO_PASSCODE:
+        print(f"[Startup] 🔐 Passcode gating ENABLED on /process-patient and /refresh-guidelines")
+    else:
+        print(f"[Startup] ⚠️  DEMO_PASSCODE not set — live agent runs are DISABLED (demo-only mode)")
+
     # Seed demo data if audit_log is empty (fresh deploy / Railway restart).
-    # This is idempotent — live runs that happened after deploy are preserved.
     try:
         with engine.connect() as conn:
             row_count = conn.execute(text("SELECT COUNT(*) FROM audit_log")).scalar() or 0
@@ -120,8 +195,7 @@ def on_startup():
     except Exception as e:
         print(f"[Startup] Warning: could not seed demo data: {e}")
 
-    # Validate OpenAI credentials immediately so bad configs fail loud
-    # instead of failing silently when the first user triggers a workflow.
+    # Validate OpenAI credentials
     try:
         from utils.llm_utils import check_openai_credentials
         cred_check = check_openai_credentials()
@@ -129,11 +203,10 @@ def on_startup():
             print(f"[Startup] ✅ {cred_check['message']}")
         else:
             print(f"[Startup] ⚠️  OpenAI credential check FAILED: {cred_check['message']}")
-            print(f"[Startup] ⚠️  Agent workflows will fail until this is fixed.")
     except Exception as e:
         print(f"[Startup] Could not validate OpenAI credentials: {e}")
 
-    # Seed guidelines in background so startup isn't blocked
+    # Seed guidelines in background
     import threading
     t = threading.Thread(target=_seed_guidelines_if_empty, daemon=True)
     t.start()
@@ -145,6 +218,7 @@ def on_startup():
 class ProcessPatientRequest(BaseModel):
     patient_id: str
     mode: Literal["full", "auth_only", "care_gap_only"] = "full"
+    passcode: Optional[str] = None  # Required to trigger live runs
 
 
 class ResolveReviewRequest(BaseModel):
@@ -163,7 +237,6 @@ class PatientSummary(BaseModel):
 # ── Audit log helpers ─────────────────────────────────────────────────────────
 
 def write_audit(patient_id: str, status: str, result: dict):
-    """Write a result to the audit log table."""
     try:
         with engine.connect() as conn:
             conn.execute(text("""
@@ -182,23 +255,6 @@ def write_audit(patient_id: str, status: str, result: dict):
 
 
 # ── Global workflow concurrency control ──────────────────────────────────────
-#
-# OpenAI's free tier caps us at 200,000 tokens/minute for gpt-4o-mini.
-# A single care-gap agent run uses ~190k of that in one burst. Any two
-# workflows running in parallel will ALWAYS collide and hit 429 rate limits,
-# regardless of which patient they're for.
-#
-# Solution: only one workflow runs at a time, globally. Additional requests
-# are rejected with HTTP 409 "workflow in progress". The frontend displays a
-# clear message and disables the Run button until the current run completes.
-#
-# This is the right trade-off for a public demo on free-tier OpenAI:
-#   - Solo user: zero wait, feels instant
-#   - Multiple concurrent users: each gets a clear "please wait" message
-#   - No rate-limit collisions, no silent failures
-#
-# In production you'd replace this with Redis-backed locks + a token budget,
-# but for a single-worker Railway deployment, a process-level lock is enough.
 
 import threading
 
@@ -207,7 +263,6 @@ _current_workflow: dict = {"patient_id": None, "mode": None, "started_at": None}
 
 
 def is_workflow_running() -> dict:
-    """Return info about the currently-running workflow, or None."""
     if _workflow_lock.locked() and _current_workflow["patient_id"]:
         elapsed = (datetime.utcnow() - _current_workflow["started_at"]).total_seconds() \
             if _current_workflow["started_at"] else 0
@@ -216,7 +271,7 @@ def is_workflow_running() -> dict:
             "patient_id": _current_workflow["patient_id"],
             "mode": _current_workflow["mode"],
             "elapsed_seconds": int(elapsed),
-            "estimated_remaining_seconds": max(0, 180 - int(elapsed)),  # typical ~3min
+            "estimated_remaining_seconds": max(0, 180 - int(elapsed)),
         }
     return {"running": False}
 
@@ -224,13 +279,6 @@ def is_workflow_running() -> dict:
 # ── Background task ───────────────────────────────────────────────────────────
 
 def run_triage_background(patient_id: str, mode: str):
-    """
-    Run one agent workflow under a global lock.
-
-    If the lock is already held (another workflow is running), this one is
-    rejected at the API layer before it ever reaches here — see process_patient.
-    This function assumes the lock has been acquired by the caller's try_acquire.
-    """
     print(f"\n[Background] Starting {mode} workflow for {patient_id}")
     _current_workflow["patient_id"] = patient_id
     _current_workflow["mode"] = mode
@@ -289,7 +337,6 @@ def run_triage_background(patient_id: str, mode: str):
             from agents.triage_supervisor import run_triage
 
             result = _with_retry(run_triage, patient_id)
-            # Ensure mode key is always present for frontend display routing
             result["mode"] = "full"
             status = result.get("status", "COMPLETED")
             write_audit(patient_id, status, result)
@@ -303,8 +350,6 @@ def run_triage_background(patient_id: str, mode: str):
         write_audit(patient_id, "FAILED", {"error": str(e), "mode": mode})
 
     finally:
-        # Clear current workflow tracking and release the lock so the next
-        # queued request (if any) can proceed.
         _current_workflow["patient_id"] = None
         _current_workflow["mode"] = None
         _current_workflow["started_at"] = None
@@ -312,46 +357,42 @@ def run_triage_background(patient_id: str, mode: str):
             _workflow_lock.release()
 
 
-# ── Endpoints ──────────────────────────────────────────────────────────────────
+# ── Public endpoints ──────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "demo_mode": not bool(DEMO_PASSCODE),
+        "live_runs_enabled": bool(DEMO_PASSCODE),
     }
 
 
 @app.get("/diagnostics")
 def diagnostics():
-    """
-    Deep diagnostic check — validates OpenAI credentials and network access.
-    Use this from the frontend to debug "Connection error" issues without
-    needing Railway log access.
-    """
     results = {"timestamp": datetime.utcnow().isoformat()}
 
-    # 1. OpenAI credentials
     try:
         from utils.llm_utils import check_openai_credentials
         results["openai"] = check_openai_credentials()
     except Exception as e:
         results["openai"] = {"ok": False, "message": f"Check failed: {e}"}
 
-    # 2. Environment variables presence (without leaking values)
     env_status = {}
-    for key in ["OPENAI_API_KEY", "MODEL_NAME", "DATABASE_URL", "LANGCHAIN_API_KEY", "USE_FHIR"]:
+    for key in ["OPENAI_API_KEY", "MODEL_NAME", "DATABASE_URL", "LANGCHAIN_API_KEY", "USE_FHIR", "DEMO_PASSCODE"]:
         val = os.getenv(key, "")
         if key == "OPENAI_API_KEY":
             env_status[key] = f"set (length={len(val)}, starts with '{val[:3]}')" if val else "NOT SET"
         elif key == "LANGCHAIN_API_KEY":
             env_status[key] = "set" if val else "not set (optional)"
+        elif key == "DEMO_PASSCODE":
+            env_status[key] = "set (live runs enabled)" if val else "not set (demo-only mode)"
         else:
             env_status[key] = val or "not set"
     results["environment"] = env_status
 
-    # 3. OpenFDA reachability (tests outbound HTTPS to public endpoint)
     try:
         import httpx
         with httpx.Client(timeout=5) as client:
@@ -364,7 +405,6 @@ def diagnostics():
     except Exception as e:
         results["openfda"] = {"ok": False, "message": f"Cannot reach OpenFDA: {type(e).__name__}: {e}"}
 
-    # 4. ChromaDB / guidelines
     try:
         from rag.embedder import get_collection_stats
         stats = get_collection_stats()
@@ -376,7 +416,6 @@ def diagnostics():
     except Exception as e:
         results["guidelines"] = {"ok": False, "message": f"ChromaDB error: {e}"}
 
-    # 5. Overall health
     results["overall_ok"] = all([
         results["openai"].get("ok", False),
         results["openfda"].get("ok", False),
@@ -385,14 +424,62 @@ def diagnostics():
     return results
 
 
+@app.get("/demo-runs")
+def list_demo_runs():
+    """Return index of pre-recorded workflow runs (public, no auth)."""
+    return {
+        "count": len(_DEMO_RUNS),
+        "available_patients": list(_DEMO_RUNS.keys()),
+        "runs": [
+            {
+                "patient_id": pid,
+                "complexity_tier": data.get("complexity_tier", ""),
+                "status": data.get("status", ""),
+                "mode": data.get("mode", "full"),
+                "generated_at": data.get("_generated_at", ""),
+            }
+            for pid, data in _DEMO_RUNS.items()
+        ]
+    }
+
+
+@app.get("/demo-runs/{patient_id}")
+def get_demo_run(patient_id: str):
+    """Return the full pre-recorded workflow output for one patient (public)."""
+    if patient_id not in _DEMO_RUNS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No cached demo run for patient {patient_id}. "
+                   f"Available: {list(_DEMO_RUNS.keys())}"
+        )
+    return _DEMO_RUNS[patient_id]
+
+
+# ── 🔐 PASSCODE-GATED: Live agent execution ───────────────────────────────────
+
 @app.post("/process-patient", response_model=PatientSummary)
 def process_patient(
     request: ProcessPatientRequest,
     background_tasks: BackgroundTasks
 ):
-    # Try to acquire the global workflow lock without blocking.
-    # If another workflow is already running, reject this request with 409
-    # and tell the user what's currently running + how long to wait.
+    """
+    🔐 PASSCODE REQUIRED. Triggers a live agent workflow that consumes OpenAI
+    tokens (~$0.04 per run). Set DEMO_PASSCODE env var to enable.
+    """
+    # Passcode gate
+    is_valid, error_msg = _check_passcode(request.passcode)
+    if not is_valid:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "passcode_required",
+                "message": error_msg,
+                "hint": "Browse the 'Example workflow outputs' section to see "
+                        "pre-recorded agent runs with complete output — no passcode needed."
+            }
+        )
+
+    # Workflow concurrency lock
     if not _workflow_lock.acquire(blocking=False):
         current = is_workflow_running()
         raise HTTPException(
@@ -404,15 +491,12 @@ def process_patient(
                     f"{current.get('patient_id', 'unknown')} "
                     f"(mode: {current.get('mode', 'unknown')}, "
                     f"running {current.get('elapsed_seconds', 0)}s). "
-                    f"Please wait ~{current.get('estimated_remaining_seconds', 180)}s and try again. "
-                    f"OpenAI's free-tier rate limit requires serializing runs."
+                    f"Please wait ~{current.get('estimated_remaining_seconds', 180)}s and try again."
                 ),
                 "current_workflow": current
             }
         )
 
-    # Lock acquired — schedule the background run. run_triage_background
-    # releases the lock in its finally block when the workflow completes.
     background_tasks.add_task(
         run_triage_background,
         request.patient_id,
@@ -435,10 +519,6 @@ def process_patient(
 
 @app.get("/workflow-status")
 def workflow_status():
-    """
-    Returns whether a workflow is currently running.
-    Frontend polls this to disable the Run button while a workflow is active.
-    """
     return is_workflow_running()
 
 
@@ -541,13 +621,37 @@ class RefreshGuidelinesRequest(BaseModel):
     source_ids: Optional[list[str]] = None
     force: bool = False
     triggered_by: str = "api"
+    passcode: Optional[str] = None  # Required for dashboard-triggered refreshes
 
+
+# ── 🔐 PASSCODE-GATED: Guideline refresh ──────────────────────────────────────
 
 @app.post("/refresh-guidelines")
 def refresh_guidelines(
     request: RefreshGuidelinesRequest,
     background_tasks: BackgroundTasks
 ):
+    """
+    🔐 PASSCODE REQUIRED (with one exception). Scrapes 63 URLs and embeds
+    ~700 chunks via OpenAI's embedding API (~$0.10 per full refresh).
+
+    Exception: `triggered_by=frontend_fallback` is allowed without passcode.
+    This is the one-time auto-seed that the frontend triggers when ChromaDB
+    is empty on fresh deploy — a startup recovery, not a user action.
+    """
+    AUTO_FALLBACK_TRIGGER = "frontend_fallback"
+    if request.triggered_by != AUTO_FALLBACK_TRIGGER:
+        is_valid, error_msg = _check_passcode(request.passcode)
+        if not is_valid:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "passcode_required",
+                    "message": error_msg + " (Guideline refresh consumes OpenAI embedding tokens.)",
+                    "hint": "Searching existing guidelines is free — try the search box above."
+                }
+            )
+
     background_tasks.add_task(
         _run_guidelines_refresh_background,
         request.source_ids,
@@ -572,9 +676,6 @@ def get_guidelines_status():
 
         stats = get_collection_stats()
 
-        # Read refresh log directly from file — avoids importing rag.refresh_flow
-        # which has Prefect @flow/@task decorators at module level that attempt to
-        # connect to a Prefect server (which doesn't exist on Railway/Render).
         import json as _json
         from pathlib import Path
         log_path = Path("data/guideline_cache/refresh_log.json")
@@ -613,6 +714,7 @@ def get_guidelines_status():
 
 @app.get("/guidelines-search")
 def search_guidelines(q: str, category: Optional[str] = None, n: int = 3):
+    """Semantic search over guidelines. Public — each query costs ~$0.000002 (negligible)."""
     try:
         from rag.retriever import retrieve_guidelines
         results = retrieve_guidelines(q, category=category, n_results=n)
@@ -625,7 +727,7 @@ def search_guidelines(q: str, category: Optional[str] = None, n: int = 3):
         return {"error": str(e), "query": q}
 
 
-# ── Analytics endpoints ───────────────────────────────────────────────────────
+# ── Analytics endpoints (all public, SQLite reads only) ───────────────────────
 
 def _safe_analytics(fn, *args, fallback=None):
     try:
@@ -702,20 +804,6 @@ def _run_guidelines_refresh_background(
     force: bool,
     triggered_by: str
 ):
-    """
-    Refresh clinical guidelines without requiring a running Prefect server.
-
-    Railway (and most PaaS platforms) don't run a Prefect API server, so
-    calling manual_refresh_flow() directly will fail with:
-      RuntimeError: Timed out while attempting to connect to ephemeral Prefect API server.
-
-    This function replicates what the Prefect flow does — scrape → embed →
-    validate → log — using the underlying functions directly, bypassing the
-    Prefect orchestration layer entirely.
-
-    The Prefect flow (rag/refresh_flow.py) is still useful for local scheduled
-    runs and CI pipelines where a Prefect server IS available.
-    """
     print(f"\n[Guidelines Refresh] Starting ({triggered_by}, force={force}, sources={source_ids or 'ALL'})")
     try:
         from rag.guideline_sources import GUIDELINE_SOURCES, SOURCES_BY_ID
@@ -724,7 +812,6 @@ def _run_guidelines_refresh_background(
         import json as _json
         from pathlib import Path
 
-        # Step 1: select sources
         if source_ids:
             sources = [SOURCES_BY_ID[sid] for sid in source_ids if sid in SOURCES_BY_ID]
             print(f"[Guidelines Refresh] Targeted refresh: {len(sources)} sources")
@@ -732,22 +819,18 @@ def _run_guidelines_refresh_background(
             sources = GUIDELINE_SOURCES
             print(f"[Guidelines Refresh] Full refresh: {len(sources)} sources")
 
-        # Step 2: scrape
         scraped = scrape_all(sources, force=force)
         changed = sum(1 for r in scraped if r.get("changed"))
-        errors  = sum(1 for r in scraped if r.get("error") and not r.get("chunks"))
+        errors = sum(1 for r in scraped if r.get("error") and not r.get("chunks"))
         print(f"[Guidelines Refresh] Scrape complete: {changed} changed, {errors} errors")
 
-        # Step 3: embed
         embed_stats = embed_all(scraped)
         total_chunks = sum(s.get("chunks_embedded", 0) for s in embed_stats)
         print(f"[Guidelines Refresh] Embed complete: {total_chunks} chunks")
 
-        # Step 4: validate
         stats = get_collection_stats()
         validation = "PASS" if stats.get("total_chunks", 0) > 0 else "WARN — collection empty"
 
-        # Step 5: write refresh log (same format as Prefect flow)
         log_path = Path("data/guideline_cache/refresh_log.json")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         existing = []

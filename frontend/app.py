@@ -2,6 +2,13 @@
 frontend/app.py
 
 Healthcare AI Multi-Agent System — Clinical Operations Dashboard
+
+Two-mode access:
+  - All 9 pages load freely for exploration (SQLite, KG, OpenFDA, FHIR, guideline search)
+  - The 3 buttons that consume OpenAI tokens require a passcode:
+    * 🚀 Run Workflow (single patient)
+    * ▶ Run batch (20 patients)
+    * ⚡ Refresh Guidelines (full 63-source)
 """
 import json
 import os
@@ -71,6 +78,12 @@ def api_post(path: str, data: dict, timeout: int = 30) -> dict:
         r = requests.post(f"{API_BASE}{path}", json=data, timeout=timeout)
         r.raise_for_status()
         return r.json()
+    except requests.exceptions.HTTPError as e:
+        # Try to extract structured error from response
+        try:
+            return {"_error": str(e), "_status_code": e.response.status_code, **e.response.json()}
+        except Exception:
+            return {"_error": str(e)}
     except Exception as e:
         return {"_error": str(e)}
 
@@ -85,8 +98,6 @@ with st.sidebar:
     if api_online:
         st.markdown('<span class="live-dot"></span> **API Online**', unsafe_allow_html=True)
 
-        # Show sidebar indicator if any workflow is currently running.
-        # Only one workflow can run at a time due to OpenAI's rate limit.
         try:
             wf_status = api_get("/workflow-status", timeout=3)
             if wf_status.get("running"):
@@ -100,9 +111,6 @@ with st.sidebar:
         st.error("⚫ API Offline")
 
     # ── Guidelines status check ───────────────────────────────────────────────
-    # Seeds embed automatically on API startup in a background thread.
-    # We check the status endpoint to show current state without triggering
-    # a manual load (which would re-scrape 63 URLs unnecessarily).
     if api_online and not st.session_state.get("_guidelines_checked"):
         st.session_state["_guidelines_checked"] = True
         try:
@@ -111,8 +119,7 @@ with st.sidebar:
             status_msg = g_status.get("status", "")
 
             if chunks == 0 and "seeding" not in status_msg.lower():
-                # Seeds should have embedded at startup; if still empty after
-                # a few seconds, trigger a manual seed load via the refresh endpoint
+                # Auto-fallback allowed without passcode — uses triggered_by=frontend_fallback
                 r = api_post("/refresh-guidelines",
                              {"source_ids": None, "force": False, "triggered_by": "frontend_fallback"})
                 if "_error" not in r:
@@ -132,7 +139,6 @@ with st.sidebar:
         except Exception:
             st.info("📖 Guidelines loading in background...")
     elif api_online:
-        # Show quiet status for already-loaded guidelines
         try:
             g_status = api_get("/guidelines-status", timeout=3)
             chunks = g_status.get("collection", {}).get("total_chunks", 0)
@@ -142,9 +148,16 @@ with st.sidebar:
                 if scraped_count > 0:
                     st.caption(f"📖 {chunks} guideline chunks loaded")
                 else:
-                    st.caption(f"📖 {chunks} chunks (seed data) · [Full load →](#guidelines-kb)")
+                    st.caption(f"📖 {chunks} chunks (seed data)")
         except Exception:
             pass
+
+    # ── Demo mode indicator ───────────────────────────────────────────────────
+    if api_online:
+        if health.get("live_runs_enabled"):
+            st.caption("🔐 Live runs: passcode-gated")
+        else:
+            st.caption("🔒 Demo-only mode (cached runs)")
 
     st.markdown("---")
     page = st.radio("Navigate", [
@@ -203,13 +216,11 @@ def render_crew_output(crew: str):
     if header:
         st.caption(header)
 
-    # ── Knowledge Graph ────────────────────────────────────────────────────────
     kg = sections.get("KNOWLEDGE GRAPH", "")
     if kg:
         with st.expander("🧠 Knowledge Graph Findings", expanded=True):
             st.markdown(kg)
 
-    # ── Care Gaps ──────────────────────────────────────────────────────────────
     care = sections.get("CARE GAPS", "")
     if care:
         with st.expander("📋 Care Gap Report", expanded=True):
@@ -225,7 +236,6 @@ def render_crew_output(crew: str):
                 else:
                     st.markdown(line)
 
-    # ── Prior Auth ─────────────────────────────────────────────────────────────
     auth_raw = sections.get("PRIOR AUTH", "")
     auth_list = []
     if auth_raw:
@@ -263,7 +273,6 @@ def render_crew_output(crew: str):
         with st.expander("🔐 Prior Authorization", expanded=False):
             st.info("No pending authorization requests for this patient.")
 
-    # ── HIGH pathway synthesis ─────────────────────────────────────────────────
     synthesis = sections.get("SYNTHESIS", "")
     if synthesis:
         with st.expander("🏥 ICT Clinical Synthesis", expanded=False):
@@ -271,7 +280,6 @@ def render_crew_output(crew: str):
 
 
 def render_care_gap_report(report: str):
-    """Render a standalone care gap report with priority colour-coding."""
     if not report:
         st.info("No care gap report available.")
         return
@@ -293,9 +301,11 @@ def render_care_gap_report(report: str):
 if page == "🏠 Live Overview":
     st.title("🏠 Multi-Agent Clinical Operations — Live")
     st.info(
-        "👋 **Welcome!** This is a live multi-agent clinical AI system — "
-        "go to **⚡ Run Agent Workflow**, pick a patient, and trigger a workflow. "
-        "Results appear here in 60–120 seconds. "
+        "👋 **Welcome!** This is a live multi-agent clinical AI system. "
+        "Most of the dashboard is fully interactive — browse the knowledge graph, "
+        "query live FHIR patients, view 10 pre-recorded workflow runs in the audit log, "
+        "and search 700+ clinical guideline chunks. "
+        "Running new agent workflows requires a passcode (they consume OpenAI tokens). "
         "Built by [Harshini Reddy](https://linkedin.com/in/harshini-reddy22/) · "
         "[GitHub](https://github.com/harshinireddy2204/healthcare-ai-agents)",
         icon=None
@@ -374,7 +384,6 @@ if page == "🏠 Live Overview":
 
                 st.markdown("---")
 
-                # Drug safety alert (full mode only)
                 if mode == "full":
                     drug_report = wf.get("drug_safety") or result.get("drug_safety")
                     if drug_report:
@@ -384,8 +393,6 @@ if page == "🏠 Live Overview":
                         if drug_report.get("fda_findings_count", 0) > 0:
                             st.caption(f"OpenFDA: {drug_report['fda_findings_count']} drug label findings")
 
-                # ── Care gap report — ONLY for care_gap_only mode ─────────────
-                # For full mode, care content is inside crew_output's CARE GAPS section
                 if mode == "care_gap_only":
                     care_report = result.get("final_report", "")
                     if care_report:
@@ -393,7 +400,6 @@ if page == "🏠 Live Overview":
                         with st.container(border=True):
                             render_care_gap_report(care_report)
 
-                # Auth results for auth_only mode
                 elif mode == "auth_only":
                     auth_results = result.get("auth_results", [])
                     if auth_results:
@@ -409,13 +415,11 @@ if page == "🏠 Live Overview":
                                 f"{conf:.0%} confidence {revised} {critic}"
                             )
 
-                # Full mode — render structured crew output
                 elif mode == "full":
                     crew = result.get("crew_output", "")
                     if crew:
                         render_crew_output(crew)
                     else:
-                        # Fallback: show whatever is available
                         if wf.get("care_summary"):
                             st.markdown("**📋 Care Summary:**")
                             with st.container(border=True):
@@ -440,6 +444,20 @@ if page == "🏠 Live Overview":
 
 elif page == "⚡ Run Agent Workflow":
     st.title("⚡ Run Agent Workflow")
+
+    # Passcode explainer at the top (collapsed to stay out of the way)
+    with st.expander("🔐 About the passcode", expanded=False):
+        st.markdown("""
+**Running a live workflow consumes ~180k OpenAI tokens (~$0.04 per run).**
+
+To keep the demo budget accessible for everyone, the Run Workflow button is
+passcode-gated. Everything else on this page — patient selection, complexity
+prediction, FHIR live search, and browsing cached example outputs — works
+without a passcode.
+
+If you'd like to run a live workflow for an interview or a demo, reach out
+on [LinkedIn](https://linkedin.com/in/harshini-reddy22/).
+        """)
 
     tab_synthetic, tab_fhir = st.tabs([
         "🗂️ Synthetic Patients (P001–P020)",
@@ -505,9 +523,6 @@ elif page == "⚡ Run Agent Workflow":
         }
         st.caption(f"ℹ️ {mode_descriptions[mode]}")
 
-        # Check if another workflow is already running so we can disable the
-        # Run button and show a clear status message. This prevents the
-        # double-click / concurrent-user case that was triggering OpenAI 429s.
         workflow_status = api_get("/workflow-status")
         is_running = workflow_status.get("running", False)
 
@@ -518,66 +533,175 @@ elif page == "⚡ Run Agent Workflow":
             st.warning(
                 f"⏳ **A workflow is currently running** for patient `{running_pid}` "
                 f"(running {elapsed}s, ~{eta}s remaining). "
-                f"Only one workflow can run at a time due to OpenAI's free-tier rate limit."
+                f"Only one workflow can run at a time."
             )
 
-        if st.button("🚀 Run Workflow", type="primary", disabled=is_running):
-            with st.spinner(f"Triggering {mode} workflow for {patient_id}..."):
-                result = api_post("/process-patient", {"patient_id": patient_id, "mode": mode})
-            if "_error" not in result:
-                st.success(f"✅ Workflow triggered — {result.get('workflow_triggered')}")
-                st.info("Check **Live Overview** or **Audit Log** for results in 60–180 seconds.")
-                # Auto-refresh after a short delay so the button disables itself
-                time.sleep(1)
-                st.rerun()
+        # ── Passcode input + Run button — inline, not a full-page wall ───────
+        pc_col, btn_col = st.columns([2, 1])
+        with pc_col:
+            workflow_passcode = st.text_input(
+                "🔐 Passcode (required for live runs)",
+                type="password",
+                key="workflow_passcode",
+                placeholder="Enter passcode to enable live execution",
+                label_visibility="visible",
+            )
+        with btn_col:
+            st.markdown("&nbsp;")  # vertical spacer to align button with input
+            run_clicked = st.button("🚀 Run Workflow", type="primary",
+                                    disabled=is_running, use_container_width=True)
+
+        if run_clicked:
+            if not workflow_passcode:
+                st.error(
+                    "🔐 Passcode required. This runs a live agent workflow that "
+                    "consumes OpenAI tokens (~$0.04 per run). "
+                    "Browse the **📂 Example workflow outputs** section below to see "
+                    "6 complete pre-recorded runs — no passcode needed."
+                )
             else:
-                # Detect 409 "workflow already running" response
-                err = result.get("_error", "")
-                if "409" in err or "workflow_in_progress" in err.lower():
-                    st.error(
-                        "⚠️ Another workflow is already running. Please wait for it to "
-                        "complete before starting a new one. Refresh this page to check status."
-                    )
+                with st.spinner(f"Triggering {mode} workflow for {patient_id}..."):
+                    result = api_post("/process-patient", {
+                        "patient_id": patient_id,
+                        "mode": mode,
+                        "passcode": workflow_passcode,
+                    })
+                if "_error" not in result:
+                    st.success(f"✅ Workflow triggered — {result.get('workflow_triggered')}")
+                    st.info("Check **Live Overview** or **Audit Log** for results in 60–180 seconds.")
+                    time.sleep(1)
+                    st.rerun()
                 else:
-                    st.error(f"Failed: {err}")
+                    status_code = result.get("_status_code", 0)
+                    if status_code == 403:
+                        detail = result.get("detail", {})
+                        msg = detail.get("message", "Passcode rejected.") if isinstance(detail, dict) else str(detail)
+                        st.error(f"🔐 {msg}")
+                    elif status_code == 409 or "workflow_in_progress" in str(result).lower():
+                        st.error(
+                            "⚠️ Another workflow is already running. Please wait for it "
+                            "to complete before starting a new one."
+                        )
+                    else:
+                        st.error(f"Failed: {result.get('_error', 'Unknown error')}")
 
         st.markdown("---")
         st.markdown("#### Quick batch — run all 20 patients")
         st.caption(
-            "Runs care_gap_only on all patients SEQUENTIALLY (one at a time). "
-            "This respects OpenAI's rate limit. Takes ~30 minutes total."
+            "Runs care_gap_only on all patients SEQUENTIALLY (one at a time, ~30 minutes total). "
+            "Also passcode-gated."
         )
-        if st.button("▶ Run batch (all 20 patients, sequential)", disabled=is_running):
-            progress = st.progress(0)
-            status_text = st.empty()
-            successes = 0
-            failures = 0
-            for i, pid in enumerate(list(patient_profiles.keys())):
-                status_text.caption(f"Queuing patient {pid} ({i+1}/20)...")
-                r = api_post("/process-patient", {"patient_id": pid, "mode": "care_gap_only"})
-                if "_error" in r:
-                    failures += 1
-                else:
-                    successes += 1
-                progress.progress((i + 1) / 20)
-                # Short delay between requests so we don't hammer the lock.
-                # The backend will reject any that arrive while one is still
-                # running — the user can re-run later to fill gaps.
-                time.sleep(2)
-            status_text.caption("")
-            if failures > 0:
-                st.warning(
-                    f"Queued {successes}/20 patients successfully. "
-                    f"{failures} were rejected because a workflow was already running — "
-                    f"wait for the current run to finish and retry the batch."
-                )
+
+        batch_pc_col, batch_btn_col = st.columns([2, 1])
+        with batch_pc_col:
+            batch_passcode = st.text_input(
+                "🔐 Passcode (required for batch run)",
+                type="password",
+                key="batch_passcode",
+                placeholder="Enter passcode",
+                label_visibility="collapsed",
+            )
+        with batch_btn_col:
+            batch_clicked = st.button("▶ Run batch (all 20)",
+                                      disabled=is_running, use_container_width=True)
+
+        if batch_clicked:
+            if not batch_passcode:
+                st.error("🔐 Passcode required. Batch runs 20 agent workflows = ~$0.80 total.")
             else:
-                st.success(f"✅ Queued all 20 patients. They will run one at a time.")
+                progress = st.progress(0)
+                status_text = st.empty()
+                successes = 0
+                failures = 0
+                for i, pid in enumerate(list(patient_profiles.keys())):
+                    status_text.caption(f"Queuing patient {pid} ({i+1}/20)...")
+                    r = api_post("/process-patient", {
+                        "patient_id": pid,
+                        "mode": "care_gap_only",
+                        "passcode": batch_passcode,
+                    })
+                    if "_error" in r:
+                        failures += 1
+                        # If passcode is wrong, no point continuing
+                        if r.get("_status_code") == 403:
+                            status_text.caption("")
+                            st.error("🔐 Passcode rejected.")
+                            break
+                    else:
+                        successes += 1
+                    progress.progress((i + 1) / 20)
+                    time.sleep(2)
+                status_text.caption("")
+                if successes > 0:
+                    st.success(f"✅ Queued {successes}/20 patients. They will run one at a time.")
+
+        # ── 📂 Example workflow outputs — free, no passcode ──────────────────
+        st.markdown("---")
+        st.markdown("### 📂 Example workflow outputs")
+        st.caption(
+            "Browse pre-recorded workflow runs for 6 representative patients. "
+            "Each shows the complete agent output — care gap report, prior auth, "
+            "drug safety, knowledge graph findings, ICT synthesis — exactly as "
+            "a live run would produce. No passcode, no tokens burned."
+        )
+
+        demo_index = api_get("/demo-runs")
+        demo_runs = demo_index.get("runs", [])
+
+        if demo_runs:
+            demo_options = {
+                r["patient_id"]: f"{r['patient_id']} — {r.get('complexity_tier', '?')} — {r.get('status', '?')}"
+                for r in demo_runs
+            }
+            selected_demo = st.selectbox(
+                "Select a cached workflow run",
+                options=list(demo_options.keys()),
+                format_func=lambda p: demo_options[p],
+                key="demo_run_selector"
+            )
+
+            if selected_demo:
+                demo_result = api_get(f"/demo-runs/{selected_demo}")
+                if "_error" not in demo_result:
+                    # Pretty header
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Complexity", demo_result.get("complexity_tier", "?"))
+                    c2.metric("Score", demo_result.get("complexity_score", "?"))
+                    c3.metric("Status", demo_result.get("status", "?"))
+
+                    rationale = demo_result.get("complexity_rationale", "")
+                    if rationale:
+                        st.caption(f"_{rationale}_")
+
+                    # Drug safety summary if present
+                    wf = demo_result.get("workflow_results", {})
+                    drug_report = wf.get("drug_safety")
+                    if drug_report:
+                        safety_tier = drug_report.get("safety_tier", "CAUTION")
+                        color = {"CRITICAL": "🔴", "WARNING": "🟠", "CAUTION": "🟡", "SAFE": "🟢"}.get(safety_tier, "🟡")
+                        st.markdown(f"**{color} Drug Safety: {safety_tier}** — "
+                                    f"OpenFDA: {drug_report.get('fda_findings_count', 0)} findings, "
+                                    f"KG: {drug_report.get('kg_findings_count', 0)} connections")
+
+                    # Structured crew output
+                    crew = demo_result.get("crew_output", "")
+                    if crew:
+                        render_crew_output(crew)
+
+                    # Raw JSON at the bottom
+                    with st.expander("🔍 Raw workflow JSON", expanded=False):
+                        st.json(demo_result)
+        else:
+            st.info(
+                "No cached demo runs loaded. Run `python scripts/generate_demo_runs.py` "
+                "locally and commit `data/demo_runs.json` to populate this section."
+            )
 
     with tab_fhir:
         st.markdown(
             "**Live FHIR R4 data** from `hapi.fhir.org/baseR4` — "
-            "This is the healthcare industry standard for EHR data exchange."
+            "This is the healthcare industry standard for EHR data exchange. "
+            "Searching and viewing FHIR data is fully free (no OpenAI tokens involved)."
         )
 
         fhir_server = st.text_input(
@@ -628,7 +752,6 @@ elif page == "⚡ Run Agent Workflow":
                         st.warning("No patients found — try Smith, Johnson, or Williams")
                 except Exception as e:
                     st.error(f"FHIR server error: {e}")
-                    st.caption("The public HAPI server can be slow. Try again in a moment.")
 
         fhir_results = st.session_state.get("fhir_results", [])
         if fhir_results:
@@ -696,12 +819,6 @@ elif page == "⚡ Run Agent Workflow":
                                 mc = med.get("medicationCodeableConcept", {})
                                 name = mc.get("text") or (mc.get("coding", [{}])[0].get("display", "") if mc.get("coding") else "")
                                 st.markdown(f"- {name or 'Unknown'}")
-
-                        st.info(
-                            f"✅ Live FHIR R4 data from `{fhir_server}`. "
-                            f"Set `USE_FHIR=true` and `FHIR_BASE_URL={fhir_server}` in `.env` "
-                            f"to use FHIR ID `{fhir_id}` directly in agent workflows."
-                        )
 
                     except Exception as e:
                         st.error(f"FHIR fetch error: {e}")
@@ -845,7 +962,6 @@ elif page == "📊 Audit Log":
                         st.info("No auth results recorded.")
 
                 elif mode == "full":
-                    # Show complexity info
                     if tier:
                         score = result.get("complexity_score", "")
                         rationale = result.get("complexity_rationale", "")
@@ -856,7 +972,6 @@ elif page == "📊 Audit Log":
                     if crew:
                         render_crew_output(crew)
                     else:
-                        # Graceful fallback for entries without crew_output
                         wf = result.get("workflow_results", {})
                         care = wf.get("care_summary") or wf.get("care_gaps", {}).get("final_report", "")
                         auth_results = wf.get("auth_results", result.get("auth_results", []))
@@ -876,12 +991,10 @@ elif page == "📊 Audit Log":
 
                         if not care and not auth_results:
                             st.info("Processing in progress or results unavailable.")
-                            # Show raw result as collapsible JSON for debugging
                             with st.expander("🔍 Raw result data", expanded=False):
                                 st.json(result)
 
                 else:
-                    # Unknown mode — show JSON
                     with st.expander("🔍 Raw result data", expanded=False):
                         st.json(result)
 
@@ -1075,7 +1188,8 @@ elif page == "💊 Drug Safety":
     st.title("💊 Drug Safety Analysis — Powered by OpenFDA")
     st.markdown(
         "Real-time drug interaction and safety analysis using FDA drug label data. "
-        "Inspired by **TxAgent** (Harvard, arXiv 2025.3) and **MALADE** (MLHC 2024)."
+        "Inspired by **TxAgent** (Harvard, arXiv 2025.3) and **MALADE** (MLHC 2024). "
+        "OpenFDA is a free public API — no OpenAI tokens involved."
     )
 
     patient_meds = {
@@ -1086,18 +1200,15 @@ elif page == "💊 Drug Safety":
         "P016": ["Levodopa/Carbidopa 25/100mg", "Sertraline 50mg", "Metoprolol 50mg"],
     }
 
-    col1, col2 = st.columns([2, 1])
-    selected = col1.selectbox("Select patient for drug safety check",
-                              options=["P001", "P004", "P005", "P007", "P016"],
-                              format_func=lambda p: f"{p} — {', '.join(patient_meds[p][:2])}...")
+    selected = st.selectbox("Select patient for drug safety reference",
+                            options=["P001", "P004", "P005", "P007", "P016"],
+                            format_func=lambda p: f"{p} — {', '.join(patient_meds[p][:2])}...")
 
-    if col2.button("🔍 Run Drug Safety Check", type="primary"):
-        with st.spinner(f"Querying OpenFDA for {selected}'s medications..."):
-            result = api_post("/process-patient", {"patient_id": selected, "mode": "full"})
-        if "_error" not in result:
-            st.success("Drug safety check triggered — view results in Audit Log.")
-        else:
-            st.error(result["_error"])
+    st.caption(
+        "To see the full drug safety agent output on this patient, go to "
+        "**⚡ Run Agent Workflow → 📂 Example workflow outputs** — "
+        "the cached runs include OpenFDA findings."
+    )
 
     st.markdown("---")
     st.markdown("#### How the Drug Safety Agent Works")
@@ -1134,7 +1245,8 @@ elif page == "🧠 Knowledge Graph":
     st.markdown(
         "Evidence-based multi-hop clinical reasoning inspired by "
         "**SNOMED CT Knowledge Graphs** (arXiv 2025.10) and "
-        "**KG4Diagnosis** (arXiv 2024.12)."
+        "**KG4Diagnosis** (arXiv 2024.12). "
+        "NetworkX in-memory — no LLM calls involved."
     )
 
     try:
@@ -1202,7 +1314,12 @@ elif page == "🧠 Knowledge Graph":
 
 elif page == "📚 Guidelines KB":
     st.title("📚 Clinical Guidelines Knowledge Base")
-    st.markdown("RAG over clinical guidelines from USPSTF, ADA, AHA, KDIGO, NCI, CDC and more.")
+    st.markdown(
+        "RAG over clinical guidelines from USPSTF, ADA, AHA, KDIGO, NCI, CDC and more. "
+        "Semantic search is free (~$0.000002 per query). "
+        "The full refresh button (below) re-scrapes 63 URLs and consumes embedding tokens — "
+        "that's the only gated action on this page."
+    )
 
     g_data = api_get("/guidelines-status")
     collection = g_data.get("collection", {})
@@ -1218,13 +1335,12 @@ elif page == "📚 Guidelines KB":
     if collection.get("total_chunks", 0) == 0:
         st.warning(
             "Guidelines are loading in the background (auto-started on API startup). "
-            "This takes 30–60 seconds. Refresh this page to check progress, "
-            "or click **⚡ Full Refresh** below to force a load."
+            "This takes 30–60 seconds. Refresh this page to check progress."
         )
     elif seed_count > 0 and scraped_count == 0:
         st.info(
-            f"✅ **{collection['total_chunks']} guideline chunks loaded** from {seed_count} core sources (seed data). "
-            f"Agents have full RAG access. Click **⚡ Full Refresh** to load all 63 sources with the latest content from USPSTF, CDC, ADA, etc."
+            f"✅ **{collection['total_chunks']} guideline chunks loaded** from {seed_count} core sources. "
+            f"Agents have full RAG access. The refresh button below (passcode-required) loads all 63 sources."
         )
     else:
         st.success(
@@ -1234,8 +1350,9 @@ elif page == "📚 Guidelines KB":
 
     st.markdown("---")
 
-    # Search test
+    # Search (free, no passcode)
     st.markdown("#### 🔍 Test Guideline Search")
+    st.caption("Semantic search is free — each query costs ~$0.000002 in embedding tokens.")
     test_q = st.text_input("Search query",
                             placeholder="HbA1c target type 2 diabetes insulin pump",
                             key="rag_search")
@@ -1244,7 +1361,6 @@ elif page == "📚 Guidelines KB":
             results = api_get(f"/guidelines-search?q={test_q}&n=3")
         if results.get("results"):
             for r in results["results"]:
-                # Show rerank score when available (more meaningful than cosine %)
                 rerank = r.get("rerank_score", 0)
                 cosine = r.get("relevance_score", 0)
                 score_display = f"rerank: {rerank:.2f}" if rerank else f"match: {cosine:.0%}"
@@ -1257,18 +1373,57 @@ elif page == "📚 Guidelines KB":
         else:
             st.info("No results found for that query.")
 
+    # ── Refresh guidelines — passcode gated ─────────────────────────────────
     st.markdown("---")
+    st.markdown("#### 🔐 Refresh guidelines (passcode required)")
+    st.caption(
+        "Refreshing scrapes 63 clinical-guideline URLs and embeds ~700 chunks via "
+        "OpenAI's embedding API — costs ~$0.10 per full refresh. Searching guidelines "
+        "above is free; only the embed/scrape step is gated."
+    )
+
+    refresh_passcode = st.text_input(
+        "Passcode",
+        type="password",
+        key="refresh_passcode",
+        placeholder="Enter passcode to enable guideline refresh",
+    )
+
     col_a, col_b = st.columns(2)
     with col_a:
         if st.button("▶ Weekly Refresh (changed sources only)", use_container_width=True):
-            r = api_post("/refresh-guidelines",
-                         {"source_ids": None, "force": False, "triggered_by": "dashboard"})
-            st.success(r.get("message", "Refresh started"))
+            if not refresh_passcode:
+                st.error("🔐 Passcode required.")
+            else:
+                r = api_post("/refresh-guidelines", {
+                    "source_ids": None,
+                    "force": False,
+                    "triggered_by": "dashboard",
+                    "passcode": refresh_passcode,
+                })
+                if r.get("_status_code") == 403:
+                    st.error("🔐 Passcode rejected.")
+                elif "_error" in r:
+                    st.error(f"Failed: {r.get('_error')}")
+                else:
+                    st.success(r.get("message", "Refresh started"))
     with col_b:
         if st.button("⚡ Full Refresh — All 63 Sources (force)", use_container_width=True):
-            r = api_post("/refresh-guidelines",
-                         {"source_ids": None, "force": True, "triggered_by": "dashboard_manual"})
-            st.success(r.get("message", "Full refresh started (~5 min)"))
+            if not refresh_passcode:
+                st.error("🔐 Passcode required. Full refresh = ~$0.10 in embedding tokens.")
+            else:
+                r = api_post("/refresh-guidelines", {
+                    "source_ids": None,
+                    "force": True,
+                    "triggered_by": "dashboard_manual",
+                    "passcode": refresh_passcode,
+                })
+                if r.get("_status_code") == 403:
+                    st.error("🔐 Passcode rejected.")
+                elif "_error" in r:
+                    st.error(f"Failed: {r.get('_error')}")
+                else:
+                    st.success(r.get("message", "Full refresh started (~5 min)"))
 
     st.markdown("---")
     recent = g_data.get("recent_refreshes", [])
@@ -1297,13 +1452,16 @@ elif page == "🔧 System Status":
     health = api_get("/health")
     if "_error" not in health:
         st.success(f"✅ API online — v{health.get('version')}")
+        if health.get("live_runs_enabled"):
+            st.info("🔐 Live agent runs are enabled (passcode-gated)")
+        else:
+            st.warning("🔒 Demo-only mode — DEMO_PASSCODE env var not set")
     else:
         st.error("❌ API offline")
         st.stop()
 
     st.markdown("---")
 
-    # ── Deep diagnostics — catches 'Connection error' issues early ────────
     st.markdown("### 🩺 Deep Diagnostics")
     st.caption("Checks OpenAI connectivity, OpenFDA reachability, and knowledge base health")
 
@@ -1314,36 +1472,24 @@ elif page == "🔧 System Status":
         if "_error" in diag:
             st.error(f"Diagnostic check failed: {diag['_error']}")
         else:
-            # OpenAI
             openai_result = diag.get("openai", {})
             if openai_result.get("ok"):
                 st.success(f"✅ **OpenAI:** {openai_result.get('message', 'OK')}")
             else:
                 st.error(f"❌ **OpenAI:** {openai_result.get('message', 'Unknown error')}")
-                st.markdown("**How to fix:**")
-                st.markdown("""
-                1. Go to your Railway project → **Variables** tab
-                2. Verify `OPENAI_API_KEY` is set and starts with `sk-`
-                3. Check that the key has no leading/trailing whitespace (retype, don't paste)
-                4. Verify your OpenAI account has credits at [platform.openai.com/account/billing](https://platform.openai.com/account/billing)
-                5. Click **Deploy** to redeploy with the corrected variable
-                """)
 
-            # OpenFDA
             fda_result = diag.get("openfda", {})
             if fda_result.get("ok"):
                 st.success(f"✅ **OpenFDA:** {fda_result.get('message', 'OK')}")
             else:
                 st.warning(f"⚠️ **OpenFDA:** {fda_result.get('message', 'Unknown')}")
 
-            # Guidelines
             g_result = diag.get("guidelines", {})
             if g_result.get("ok"):
                 st.success(f"✅ **Guidelines KB:** {g_result.get('total_chunks')} chunks loaded across {g_result.get('total_sources')} sources")
             else:
                 st.info(f"ℹ️ **Guidelines KB:** Loading or empty — {g_result.get('message', '')}")
 
-            # Environment variables
             st.markdown("**Environment Variables:**")
             env = diag.get("environment", {})
             for key, val in env.items():
@@ -1359,7 +1505,6 @@ elif page == "🔧 System Status":
         ("OpenFDA (drug safety)", "httpx"),
         ("Knowledge Graph", "networkx"),
         ("ChromaDB (RAG store)", "chromadb"),
-        ("Sentence Transformers (embedder)", "sentence_transformers"),
         ("Prefect (orchestration)", "prefect"),
         ("LangSmith (tracing)", "langsmith"),
     ]
@@ -1370,28 +1515,6 @@ elif page == "🔧 System Status":
             st.markdown(f"✅ **{name}**")
         except ImportError:
             st.markdown(f"❌ **{name}** — run `pip install {module.replace('_','-')}`")
-
-    st.markdown("---")
-    st.markdown("### Quick Commands")
-    st.code("""
-# Start API
-uvicorn api.main:app --reload --port 8000
-
-# Start dashboard
-streamlit run frontend/app.py
-
-# Run Prefect batch
-python orchestration/prefect_flow.py
-
-# Force-populate guidelines KB (full 63-source scrape, ~5 min)
-python rag/refresh_flow.py --force
-
-# Test knowledge graph
-python knowledge_graph/clinical_graph.py
-
-# Test drug safety agent
-python agents/drug_safety_agent.py
-""", language="bash")
 
     st.markdown("---")
     st.markdown("### Architecture & Research References")
@@ -1405,7 +1528,7 @@ python agents/drug_safety_agent.py
 | Knowledge graph | Multi-hop clinical reasoning | SNOMED KG, KG4Diagnosis 2024 |
 | FHIR R4 integration | Real EHR data standard | FHIR-AgentBench, arXiv 2025.9 |
 | HITL escalation | Tiered agentic oversight | arXiv 2025.6 |
-| Prefect orchestration | Production scheduling | — |
+| Two-mode demo architecture | Cost-based access split | Production practice |
 """)
 
 st.sidebar.markdown("---")

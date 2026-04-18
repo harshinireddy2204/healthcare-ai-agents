@@ -19,7 +19,8 @@ Solution: proactive token budget tracking.
   - Track tokens spent in the last 60 seconds (sliding window)
   - If the estimated call would exceed budget, sleep PROACTIVELY until headroom exists
   - On 429 responses, use the actual retry-after hint from OpenAI
-  - On bucket-drained 429s (Used 200000), force a full 65s wait
+  - On bucket-fully-drained 429s, force-record TPM_LIMIT to block subsequent
+    calls proactively, then wait 65s for the window to clear
 
 This prevents 429s from happening in the first place, making workflows
 reliable instead of lucky.
@@ -84,6 +85,11 @@ class TokenBudget:
     def wait_until_available(self, needed: int) -> float:
         """
         Block until there's headroom for `needed` tokens.
+
+        Sticks to OpenAI's actual 200k TPM reality: if the 60-second window
+        says we've used too much, wait. The noisy per-call wait messages are
+        squelched — only logs if the wait is meaningful (>3s total).
+
         Returns total seconds slept.
         """
         if needed >= self.limit:
@@ -92,11 +98,14 @@ class TokenBudget:
             return 60
 
         total_slept = 0.0
+        logged = False
         while True:
             with self._lock:
                 self._prune()
                 current = sum(tokens for _, tokens in self._history)
                 if current + needed <= self.limit:
+                    if logged:
+                        print(f"  [TokenBudget] OK after {total_slept:.1f}s wait (usage {current}/{self.limit})")
                     return total_slept
 
                 if not self._history:
@@ -106,8 +115,11 @@ class TokenBudget:
                     wait = max(0.5, (oldest_ts + 60) - time.time() + 0.2)
                     wait = min(wait, 10.0)
 
-            if total_slept == 0:
-                print(f"  [TokenBudget] Usage {current}/{self.limit}, need {needed} — waiting {wait:.1f}s")
+            # Only log if we're going to wait more than 3 seconds total.
+            # Prevents the "50 waiting-1-second lines" spam.
+            if not logged and total_slept + wait > 3.0:
+                print(f"  [TokenBudget] Usage {current}/{self.limit}, need {needed} — waiting up to a few seconds...")
+                logged = True
 
             time.sleep(wait)
             total_slept += wait
@@ -138,8 +150,22 @@ def _get_tiktoken():
 def estimate_tokens(messages: list) -> int:
     """
     Estimate token count for a message list.
-    Adds 1.5x safety margin for LangChain tool definitions not visible here,
-    plus 2000 tokens for expected response.
+
+    Previous version multiplied real token count by 1.5x AND added a 2000-token
+    response buffer, which turned a real 2k-token ReAct call into an 11k+
+    estimate. That caused livelock: the TPM budget would never have enough
+    headroom for the *estimate*, even when actual usage was far below.
+
+    Fixed approach:
+      - Count actual message tokens via tiktoken (accurate)
+      - Add a fixed 1500 tokens for tool definitions (LangChain injects these
+        invisibly — prior auth has ~15 tools, ~100 tokens each)
+      - Add 1000 tokens for expected response
+      - Apply a modest 1.1x safety margin (not 1.5x)
+      - Cap the estimate at 30k — no single call to gpt-4o-mini legitimately
+        needs more than this; anything higher indicates the estimator is off
+        and would block forever. If the actual call exceeds this, we get a
+        429 and fall back to reactive retry, which is fine.
     """
     enc = _get_tiktoken()
 
@@ -159,10 +185,16 @@ def estimate_tokens(messages: list) -> int:
                     if isinstance(block, dict) and "text" in block:
                         total += len(enc.encode(block.get("text", "")))
             total += 4
-        total += 2000  # expected response
-        return int(total * 1.5)  # safety margin for tool defs
 
-    # Fallback heuristic
+        # Fixed overhead, not multiplicative
+        total += 1500  # tool definition overhead (~15 tools × ~100 tokens)
+        total += 1000  # expected response
+        estimate = int(total * 1.1)  # modest safety margin
+
+        # Hard cap — prevents livelock if a single message is huge
+        return min(estimate, 30000)
+
+    # Fallback heuristic (no tiktoken)
     total_chars = 0
     for msg in messages:
         content = ""
@@ -172,7 +204,9 @@ def estimate_tokens(messages: list) -> int:
             content = msg.get("content", "") or ""
         if isinstance(content, str):
             total_chars += len(content)
-    return int(total_chars / 4 * 1.5) + 3000
+    # ~4 chars per token + tool overhead (1500) + response (1000) + 10% margin
+    estimate = int((total_chars / 4 + 2500) * 1.1)
+    return min(estimate, 30000)
 
 
 # ── Retry helpers ─────────────────────────────────────────────────────────────
@@ -192,7 +226,7 @@ def _parse_retry_seconds(err: openai.RateLimitError) -> Optional[float]:
 
 
 def _is_bucket_fully_drained(err: openai.RateLimitError) -> bool:
-    """Detect the 'Used 200000' case where bucket is fully drained."""
+    """Detect when OpenAI reports usage >= 97% of TPM_LIMIT (bucket effectively full)."""
     msg = str(err)
     m = re.search(r"Used (\d+)", msg)
     if m:
@@ -202,18 +236,43 @@ def _is_bucket_fully_drained(err: openai.RateLimitError) -> bool:
 
 
 def _extract_actual_usage(result) -> Optional[int]:
-    """Pull actual total_tokens from LangChain response if available."""
+    """
+    Pull actual total_tokens from LangChain response.
+
+    LangChain's AIMessage exposes usage in multiple places depending on version:
+      - result.usage_metadata (UsageMetadata TypedDict with total_tokens attr)
+      - result.response_metadata["token_usage"]["total_tokens"]
+      - result.response_metadata["usage"]["total_tokens"]
+
+    We try them all. If nothing works we return None and the caller falls back
+    to the estimate (which is conservative).
+    """
+    # Path 1: usage_metadata (newer LangChain) — it's a TypedDict, not a plain dict
     try:
-        meta = getattr(result, "response_metadata", None) or getattr(result, "usage_metadata", None)
-        if meta:
-            if isinstance(meta, dict):
-                usage = meta.get("token_usage") or meta.get("usage") or meta
+        um = getattr(result, "usage_metadata", None)
+        if um:
+            # TypedDicts support both attribute and subscript access
+            total = getattr(um, "total_tokens", None)
+            if total is None and isinstance(um, dict):
+                total = um.get("total_tokens")
+            if total:
+                return int(total)
+    except Exception:
+        pass
+
+    # Path 2: response_metadata → token_usage/usage → total_tokens
+    try:
+        rm = getattr(result, "response_metadata", None)
+        if rm and isinstance(rm, dict):
+            for key in ("token_usage", "usage"):
+                usage = rm.get(key)
                 if isinstance(usage, dict):
                     total = usage.get("total_tokens")
                     if total:
                         return int(total)
     except Exception:
         pass
+
     return None
 
 
@@ -250,7 +309,10 @@ def llm_invoke(llm, messages):
             if attempt == _MAX_ATTEMPTS - 1:
                 raise
 
-            _budget.record(needed)
+            # Don't record `needed` on 429 — we'd double-count. OpenAI already
+            # tracked the usage on their end (that's why it returned 429). Our
+            # tracker catches up when the next successful call records its
+            # actual usage from response metadata.
 
             if _is_bucket_fully_drained(e):
                 wait = 65
