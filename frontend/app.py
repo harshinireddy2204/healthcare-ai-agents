@@ -1189,26 +1189,162 @@ elif page == "💊 Drug Safety":
     st.markdown(
         "Real-time drug interaction and safety analysis using FDA drug label data. "
         "Inspired by **TxAgent** (Harvard, arXiv 2025.3) and **MALADE** (MLHC 2024). "
-        "OpenFDA is a free public API — no OpenAI tokens involved."
+        "OpenFDA is a free public API, no OpenAI tokens involved."
     )
 
     patient_meds = {
-        "P001": ["Metformin 1000mg", "Lisinopril 10mg", "Atorvastatin 40mg"],
-        "P004": ["Furosemide 40mg", "Warfarin 5mg", "Carvedilol 12.5mg", "Insulin glargine"],
-        "P005": ["Methotrexate 15mg", "Folic acid 1mg", "Calcium 1200mg"],
-        "P007": ["Tamoxifen 20mg", "Lisinopril 5mg"],
-        "P016": ["Levodopa/Carbidopa 25/100mg", "Sertraline 50mg", "Metoprolol 50mg"],
+        "P001": {
+            "name": "Eleanor Vance, 67F",
+            "meds": ["Metformin 1000mg", "Lisinopril 10mg", "Atorvastatin 40mg"],
+            "diagnoses": ["T2DM", "Hypertension", "CKD Stage 3"],
+            "risks": [
+                ("Metformin + CKD Stage 3", "⚠️ Caution", "FDA label + KDIGO 2024",
+                 "Metformin dose should not be escalated when eGFR 30–45. Discontinue if eGFR falls below 30."),
+                ("Lisinopril + CKD", "⚠️ Monitor", "KDIGO 2024",
+                 "ACE inhibitors slow nephropathy progression but require eGFR + potassium monitoring."),
+                ("Atorvastatin", "✅ Routine", "ACC/AHA 2018",
+                 "High-intensity statin appropriate for T2DM with CVD risk factors."),
+            ]
+        },
+        "P004": {
+            "name": "James Whitfield, 72M",
+            "meds": ["Furosemide 40mg", "Warfarin 5mg", "Carvedilol 12.5mg", "Insulin glargine", "Metformin 1000mg"],
+            "diagnoses": ["Heart Failure", "AFib", "T2DM", "CKD Stage 4"],
+            "risks": [
+                ("Metformin + CKD Stage 4", "🔴 CONTRAINDICATED", "FDA label + KDIGO",
+                 "Contraindicated when eGFR < 30 due to lactic acidosis risk. Discontinue immediately."),
+                ("Warfarin + NSAIDs", "🔴 HIGH", "FDA label",
+                 "Significantly increased bleeding risk. Avoid NSAIDs entirely on anticoagulation."),
+                ("Warfarin + Aspirin", "⚠️ Major", "ACC/AHA 2019",
+                 "Combination increases GI bleed risk 3x. Requires compelling indication and careful monitoring."),
+                ("Furosemide", "⚠️ Monitor", "FDA label",
+                 "Monitor electrolytes weekly in elderly patients on HF + CKD regimen."),
+            ]
+        },
+        "P005": {
+            "name": "Priya Nair, 38F",
+            "meds": ["Methotrexate 15mg", "Folic acid 1mg", "Calcium 1200mg"],
+            "diagnoses": ["Rheumatoid Arthritis", "Osteoporosis"],
+            "risks": [
+                ("Methotrexate + NSAIDs", "🔴 HIGH", "FDA label",
+                 "NSAIDs reduce MTX renal clearance, increasing toxicity. Avoid combination."),
+                ("Methotrexate alone", "⚠️ Monitor", "ACR 2021",
+                 "Check CBC + LFTs every 2–3 months for bone marrow suppression and hepatotoxicity."),
+                ("Folic acid 1mg daily", "✅ Required", "ACR 2021",
+                 "Reduces MTX-related nausea, mucositis, and hepatotoxicity. Essential co-medication."),
+            ]
+        },
+        "P007": {
+            "name": "Linda Okafor, 55F",
+            "meds": ["Tamoxifen 20mg", "Lisinopril 5mg"],
+            "diagnoses": ["Breast Cancer Stage II", "Hypertension"],
+            "risks": [
+                ("Tamoxifen", "⚠️ Monitor", "NCCN",
+                 "Increases endometrial cancer risk. Report any abnormal uterine bleeding promptly."),
+                ("Tamoxifen", "⚠️ Bone density", "NCCN Survivorship",
+                 "Baseline DEXA scan + annual monitoring recommended during treatment."),
+                ("Lisinopril", "✅ Routine", "ACC/AHA 2017",
+                 "First-line antihypertensive, compatible with tamoxifen."),
+            ]
+        },
+        "P016": {
+            "name": "Frank Deluca, 58M",
+            "meds": ["Levodopa/Carbidopa 25/100mg", "Sertraline 50mg", "Metoprolol 50mg"],
+            "diagnoses": ["Parkinson's Disease", "Depression", "Hypertension"],
+            "risks": [
+                ("Sertraline + Levodopa", "⚠️ Monitor", "FDA label",
+                 "SSRIs may reduce Parkinson medication efficacy. Monitor motor symptoms."),
+                ("Metoprolol + PD", "⚠️ Caution", "AHA",
+                 "Beta-blockers can mask tremor and affect autonomic symptoms. Assess orthostatic BP."),
+                ("Sertraline", "✅ First-line", "APA/NIMH",
+                 "SSRI is first-line for depression; typical trial 4–8 weeks at therapeutic dose."),
+            ]
+        },
     }
 
-    selected = st.selectbox("Select patient for drug safety reference",
-                            options=["P001", "P004", "P005", "P007", "P016"],
-                            format_func=lambda p: f"{p} — {', '.join(patient_meds[p][:2])}...")
-
-    st.caption(
-        "To see the full drug safety agent output on this patient, go to "
-        "**⚡ Run Agent Workflow → 📂 Example workflow outputs** — "
-        "the cached runs include OpenFDA findings."
+    selected = st.selectbox(
+        "Select patient for drug safety reference",
+        options=list(patient_meds.keys()),
+        format_func=lambda p: f"{p} — {patient_meds[p]['name']} — {', '.join(patient_meds[p]['meds'][:2])}..."
     )
+
+    profile = patient_meds[selected]
+
+    # Dynamic patient header
+    st.markdown(f"### {selected} — {profile['name']}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Active diagnoses**")
+        for dx in profile["diagnoses"]:
+            st.markdown(f"- {dx}")
+    with c2:
+        st.markdown("**Current medications**")
+        for m in profile["meds"]:
+            st.markdown(f"- {m}")
+
+    # Dynamic risk table per patient
+    st.markdown(f"#### Drug safety profile for {selected}")
+    import pandas as pd
+    risk_df = pd.DataFrame(
+        [{"Risk": r[0], "Severity": r[1], "Source": r[2], "Clinical note": r[3]} for r in profile["risks"]]
+    )
+    st.dataframe(risk_df, use_container_width=True, hide_index=True)
+
+    # Live OpenFDA query — shows real-time FDA data for a drug, free API
+    st.markdown("---")
+    st.markdown(f"#### 🔬 Query OpenFDA live for one of {selected}'s medications")
+    st.caption(
+        "Fetches real FDA drug label data including drug interactions, contraindications, "
+        "and boxed warnings. Free public API, no OpenAI tokens."
+    )
+
+    drug_choices = [m.split()[0] for m in profile["meds"]]
+    selected_drug = st.selectbox("Select medication", options=drug_choices, key=f"drug_{selected}")
+
+    if st.button(f"🔍 Query FDA for {selected_drug}"):
+        with st.spinner(f"Fetching FDA drug label for {selected_drug}..."):
+            try:
+                import httpx
+                with httpx.Client(timeout=10, follow_redirects=True) as client:
+                    # Try generic name first, then brand
+                    resp = None
+                    for field in ["openfda.generic_name", "openfda.brand_name"]:
+                        r = client.get(
+                            "https://api.fda.gov/drug/label.json",
+                            params={"search": f'{field}:"{selected_drug}"', "limit": 1}
+                        )
+                        if r.status_code == 200 and r.json().get("results"):
+                            resp = r.json()
+                            break
+
+                if resp and resp.get("results"):
+                    label = resp["results"][0]
+
+                    contra = label.get("contraindications", [])
+                    interactions = label.get("drug_interactions", [])
+                    boxed = label.get("boxed_warnings", [])
+
+                    if boxed:
+                        st.error(f"**🔴 FDA Boxed Warning:** {' '.join(boxed)[:800]}...")
+
+                    if contra:
+                        with st.expander("⚠️ Contraindications (from FDA label)", expanded=True):
+                            st.markdown(f"{' '.join(contra)[:1200]}...")
+
+                    if interactions:
+                        with st.expander("💊 Drug interactions (from FDA label)", expanded=True):
+                            st.markdown(f"{' '.join(interactions)[:1500]}...")
+
+                    if not (boxed or contra or interactions):
+                        st.info(f"No specific warnings or interactions returned for {selected_drug}. "
+                                "Try a different medication name.")
+                else:
+                    st.warning(f"No FDA label found for '{selected_drug}'. "
+                               "The OpenFDA database indexes by generic name; try the generic.")
+
+            except Exception as e:
+                st.error(f"OpenFDA query failed: {e}")
 
     st.markdown("---")
     st.markdown("#### How the Drug Safety Agent Works")
@@ -1226,16 +1362,10 @@ elif page == "💊 Drug Safety":
         st.caption("Graph traversal for drug-condition contraindications")
         st.code("warfarin → NSAIDs\n[FDA: bleeding risk]", language="text")
 
-    st.markdown("---")
-    st.markdown("**High-risk patient spotlight — P004 (James Whitfield):**")
-    st.markdown("""
-| Drug | Risk Flag | Source |
-|------|-----------|--------|
-| Warfarin + NSAIDs | ⚠️ Major bleeding risk | FDA drug label |
-| Metformin + CKD Stage 4 | 🔴 CONTRAINDICATED (lactic acidosis) | FDA + KDIGO |
-| Furosemide | ⚠️ Monitor electrolytes | FDA drug label |
-| Warfarin + Aspirin | ⚠️ GI bleed risk | ACC/AHA guideline |
-""")
+    st.caption(
+        "To see the full drug safety agent output on this patient (with ICT synthesis), "
+        "go to **⚡ Run Agent Workflow → 📂 Example workflow outputs**."
+    )
 
 
 # ── Page: Knowledge Graph ─────────────────────────────────────────────────────
